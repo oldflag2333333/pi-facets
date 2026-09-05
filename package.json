@@ -1,0 +1,63 @@
+{
+  "name": "pi-facets",
+  "version": "0.1.0",
+  "description": "Reusable Pi capability profiles plus context-isolated delegation and pluggable child surfaces",
+  "type": "module",
+  "license": "MIT",
+  "author": {
+    "name": "oldflag",
+    "email": "oldflag2333333@gmail.com",
+    "url": "https://github.com/oldflag2333333"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/oldflag2333333/pi-facets.git"
+  },
+  "homepage": "https://github.com/oldflag2333333/pi-facets#readme",
+  "bugs": {
+    "url": "https://github.com/oldflag2333333/pi-facets/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "profiles",
+    "subagent",
+    "herdr"
+  ],
+  "files": [
+    "src",
+    "herdr-plugin",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts",
+    "check": "npm run typecheck && npm test"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.84.4",
+    "@earendil-works/pi-agent-core": "^0.84.4",
+    "@earendil-works/pi-coding-agent": "^0.84.4",
+    "@earendil-works/pi-tui": "^0.84.4",
+    "@types/node": "^22.15.0",
+    "tsx": "^4.20.0",
+    "typebox": "^1.0.72",
+    "typescript": "^5.8.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
