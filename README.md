@@ -2,30 +2,43 @@
 
 A Pi extension for reusable capability profiles and delegating self-contained work to a fresh child Pi without sharing either session's full conversation.
 
-The parent and child communicate through a deliberately narrow protocol:
+The Parent and Child communicate through a deliberately narrow protocol:
 
-- parent → child: initial task, answers to child questions, cancellation
-- child → parent: blocking questions and one bounded final result
+- Parent → Child: messages through `talk`, plus explicit closure
+- Child → Parent: messages through `talk`
 - never exposed by the extension: transcript, thinking blocks, tool history, or session files
 
-When Pi runs inside [Herdr](https://herdr.dev), each child opens in a labeled background tab and the tab closes automatically when the task reaches a terminal state. Outside Herdr, the extension falls back to a headless Pi process.
+Facets requires a supported interactive Child surface. Herdr is currently the only surface adapter; future adapters may include tmux. Every Child opens in a labeled Herdr background tab and remains open until the Parent calls `close_child` or the user closes the tab manually.
 
 > Status: early development MVP. The protocol and file channel are implemented; real-Herdr compatibility still needs end-to-end testing.
 
 ## Why the launch is asynchronous
 
-`delegate_pi` returns after the child launches. A synchronous parent tool that waited for completion would deadlock when the child needed the parent to answer a question. The extension instead wakes the parent session when a question or final result arrives.
+`create_child` returns after the Child launches. Parent and Child then exchange asynchronous `talk` messages. Facets wakes the Parent whenever a Child sends a message.
+
+## Parent context
+
+Parent-only orchestration rules can be written in:
+
+```text
+~/.pi/agent/facets/PARENT.md                 # global
+<cwd-or-ancestor>/.pi/facets/PARENT.md       # trusted project hierarchy
+```
+
+Facets appends non-empty files to the Parent Pi system prompt in global-to-nearest order. Project files are discovered by walking from the Parent Pi working directory to the filesystem root, and are loaded only when project resources are trusted. `PARENT.md` is never loaded by delegated children, so use it for delegation policy such as work the Parent must route to a specific profile. Keep shared project rules in `AGENTS.md` and keep each profile focused on the selected child's capabilities and execution boundaries.
+
+Changes take effect after `/reload`.
 
 ## Startup profiles
 
 Facets does not ship built-in profiles. Profiles are user-owned JSON files loaded from:
 
 ```text
-~/.pi/agent/facets/profiles/*.json       # global
-<project>/.pi/facets/profiles/*.json     # trusted project
+~/.pi/agent/facets/profiles/*.json                 # global
+<cwd-or-ancestor>/.pi/facets/profiles/*.json        # trusted project hierarchy
 ```
 
-A trusted project profile overrides a same-named global profile. The file name must match `name`:
+Facets walks from the Parent Pi working directory to the filesystem root. A profile closer to the current working directory overrides a same-named ancestor profile, and any trusted project profile overrides a same-named global profile. This lets a Pi started under `project/workspace/` use profiles defined at `project/.pi/facets/profiles/`. The file name must match `name`:
 
 ```json
 {
@@ -34,15 +47,16 @@ A trusted project profile overrides a same-named global profile. The file name m
   "description": "Read-only code review",
   "model": "anthropic/claude-sonnet-4-5",
   "thinkingLevel": "high",
+  "sessionPersistence": "persistent",
   "tools": ["read", "grep", "find", "ls"],
   "skills": ["code-review"],
   "instructions": "Review only; do not modify files."
 }
 ```
 
-`thinkingLevel` is passed to Pi rather than constrained by a Facets-owned enum. Skill entries may be standard skill names or paths relative to the profile file. Valid profile names, scope, and descriptions are injected into the Parent Pi system context at startup, so it can select a profile without calling a discovery tool. Users can still run `/profiles` for diagnostics; profiles cannot be switched inside a running session.
+`thinkingLevel` is passed to Pi rather than constrained by a Facets-owned enum. `sessionPersistence` is `ephemeral` by default or `persistent`: ephemeral conversations remain in memory only, while persistent conversations are saved by Pi. Both remain open until the Parent calls `close_child` or the user closes the Herdr tab. Skill entries may be standard skill names or paths relative to the profile file. Named project skills are also resolved from the Parent Pi working directory and its ancestors; explicit skill paths remain relative to the profile file. Selecting a skill in a profile is an explicit capability choice, so Facets makes it model-visible even when its source declares `disable-model-invocation: true`; the source is not modified, and relative skill assets remain available through a private runtime mirror. Valid profile names, scope, and descriptions are injected into the Parent Pi system context only as a capability catalog, so it can select a profile without calling a discovery tool; Parent routing policy belongs in `PARENT.md`. Users can still run `/profiles` for diagnostics; profiles cannot be switched inside a running session.
 
-Starting Pi without `--profile` preserves Pi's existing model, thinking, tools, and skills. A selected profile replaces the active tool list exactly; include `delegate_pi`, `reply_child`, `cancel_child`, and `list_children` in an orchestrator profile when those controls should remain available. To opt into a startup profile:
+Starting Pi without `--profile` preserves Pi's existing model, thinking, tools, and skills. A selected profile replaces the active tool list exactly; include `create_child`, `talk`, `close_child`, and `list_child` in an orchestrator profile when those controls should remain available. To opt into a startup profile:
 
 ```bash
 pi --profile reviewer
@@ -56,15 +70,14 @@ For delegated children, Facets resolves every non-built-in profile tool through 
 
 ### Parent Pi
 
-- `delegate_pi` — launch a fresh child with a self-contained task and explicit profile
-- `reply_child` — answer one exact pending child question
-- `cancel_child` — cancel a child and close its surface
-- `list_children` — list bounded status metadata; never returns transcripts
+- `create_child` — launch a fresh child with a self-contained task and explicit profile
+- `talk` — send one message to an existing Child
+- `close_child` — stop active work if needed and close the child session
+- `list_child` — list open Child sessions; never returns transcripts
 
 ### Child Pi
 
-- `ask_parent` — ask one blocking question and wait for the corresponding answer
-- `return_to_parent` — submit one final bounded result
+- `talk` — send one message to the Parent and end the current turn
 
 Child mode is selected internally with `PI_FACETS_ROLE=child`. Nested delegation is intentionally disabled in the MVP.
 
@@ -72,14 +85,15 @@ Child mode is selected internally with `PI_FACETS_ROLE=child`. Nested delegation
 
 Children launch with:
 
-- `--no-session` so their conversation is memory-only
+- a Herdr tab; no headless fallback is available
+- `--no-session` for ephemeral profiles; persistent profiles use a normal saved Pi session
 - `--no-extensions -e <Facets>` so unrelated ambient extensions are not inherited
 - a fresh initial prompt rather than a parent session fork
 - an explicit tool allowlist
 
-A child receives the configured profile tools plus the mandatory `ask_parent` and `return_to_parent` protocol tools. The parent resolves the profile once and stores that immutable launch snapshot in the channel manifest, so later config edits cannot change an already-running child.
+A child receives the configured profile tools plus the mandatory `talk` protocol tool. The parent resolves the profile once and stores that immutable launch snapshot in the channel manifest, so later config edits cannot change an already-running child.
 
-The parent TUI renders each launch with the selected profile plus its configured tool and skill names; long capability lists are compacted. It otherwise receives only compact lifecycle notices. Full question/result payloads are injected transiently with Pi's `context` event for the model turn that handles them; they are not rendered as child transcripts.
+The Parent TUI renders each launch with the selected profile plus its configured tool and skill names; long capability lists are compacted. It otherwise receives only compact lifecycle notices. Child `talk` messages are injected transiently with Pi's `context` event for the Parent turn that handles them; they are not rendered as Child transcripts.
 
 This is a protocol boundary, not an operating-system sandbox. A child with shell access runs as the same OS user and may be able to access files outside the project. A future hardened adapter should run write-capable children in a container or restricted worktree environment.
 
@@ -92,9 +106,9 @@ The Herdr adapter performs:
 3. explicitly load Herdr's installed Pi lifecycle integration when available
 4. submit the task through `herdr agent prompt` so Herdr observes the working transition
 5. continue communication through the private file channel, not terminal scraping
-6. `herdr tab close` after final result/failure acknowledgement
+6. keep the tab open until `close_child` or manual closure
 
-The adapter requires a current Herdr release that supports `tab create` and `agent start --kind`.
+The adapter requires a current Herdr release that supports `tab create` and `agent start --kind`. If Herdr is unavailable, `create_child` fails instead of falling back to a non-interactive process.
 
 ### Hide/show Facets subagents
 
@@ -115,10 +129,10 @@ Runtime data lives under:
 ```text
 $XDG_RUNTIME_DIR/pi-facets-<uid>/<parent-session>/<run-id>/
 ├── manifest.json
-├── requests/
-├── replies/
-├── result.json
-└── cancel.json
+├── to-parent/
+├── to-child/
+├── close.json
+└── closed.json
 ```
 
 Directories use mode `0700`, files use `0600`, writes use atomic rename, and every payload carries a random capability token plus exact parent/run identity. A polling transport is used initially for portability and reload recovery.
@@ -162,18 +176,20 @@ Equivalent model-facing call:
 
 - no built-in profiles; every delegated child requires an explicit global or trusted-project profile
 - custom profile tools must already be registered in the parent Pi so Facets can resolve their owning extension; in-memory SDK tools cannot be recreated in delegated children
-- maximum four concurrent children
+- maximum four open Child sessions
 - no nested children
 - no worktree adapter yet
 - no OS-level sandbox
-- parent shutdown cancels children; `/reload` preserves and restores channels
-- Herdr failure/crash detection currently relies on the overall task deadline
-- successful final results are bounded to 1 MiB; questions and answers to 64 KiB
+- Parent shutdown and `/reload` preserve open Child sessions and channels
+- a graceful manual close of a persistent Herdr tab is reported back and releases its retained channel; hard crashes still rely on timeout/manual cleanup
+- hard Herdr or Child crashes without graceful shutdown require manual cleanup
+- each `talk` message is bounded to 1 MiB
 
 ## Planned next steps
 
 1. fake-Herdr adapter integration tests
-2. real Herdr end-to-end test for create → ask → reply → result → close
-3. worktree-backed write mode
-4. external adapter registration API
-5. optional hardened/container launcher
+2. real Herdr end-to-end test for create → talk → talk → close
+3. tmux surface adapter
+4. worktree-backed write mode
+5. external adapter registration API
+6. optional hardened/container launcher

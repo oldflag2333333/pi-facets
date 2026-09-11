@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { materializeProfileSkill } from "./skill-visibility.js";
 import type {
 	LoadedProfile,
 	ProfileCatalog,
@@ -19,6 +20,7 @@ const ALLOWED_KEYS = new Set([
 	"description",
 	"model",
 	"thinkingLevel",
+	"sessionPersistence",
 	"tools",
 	"skills",
 	"instructions",
@@ -43,6 +45,9 @@ function parseProfile(value: unknown, sourcePath: string): ProfileDefinition {
 	}
 	if (!stringArray(value.tools, 128) || value.tools.length === 0) throw new Error("tools must be a non-empty string array with at most 128 entries");
 	if (value.skills !== undefined && !stringArray(value.skills, 128)) throw new Error("skills must be a string array with at most 128 entries");
+	if (value.sessionPersistence !== undefined && value.sessionPersistence !== "ephemeral" && value.sessionPersistence !== "persistent") {
+		throw new Error("sessionPersistence must be 'ephemeral' or 'persistent'");
+	}
 	for (const key of ["description", "model", "thinkingLevel", "instructions"] as const) {
 		if (value[key] !== undefined && (typeof value[key] !== "string" || value[key].trim().length === 0)) {
 			throw new Error(`${key} must be a non-empty string`);
@@ -61,6 +66,9 @@ function parseProfile(value: unknown, sourcePath: string): ProfileDefinition {
 		...(typeof value.description === "string" ? { description: value.description } : {}),
 		...(typeof value.model === "string" ? { model: value.model } : {}),
 		...(typeof value.thinkingLevel === "string" ? { thinkingLevel: value.thinkingLevel } : {}),
+		...(value.sessionPersistence === "ephemeral" || value.sessionPersistence === "persistent"
+			? { sessionPersistence: value.sessionPersistence }
+			: {}),
 		...(Array.isArray(value.skills) ? { skills: [...new Set(value.skills as string[])] } : {}),
 		...(typeof value.instructions === "string" ? { instructions: value.instructions } : {}),
 	};
@@ -97,19 +105,32 @@ export function projectProfilesDir(cwd: string): string {
 	return path.join(cwd, CONFIG_DIR_NAME, "facets", "profiles");
 }
 
+function ancestorDirectories(cwd: string): string[] {
+	const directories: string[] = [];
+	let current = path.resolve(cwd);
+	while (true) {
+		directories.push(current);
+		const parent = path.dirname(current);
+		if (parent === current) return directories;
+		current = parent;
+	}
+}
+
 export function loadProfiles(cwd: string, includeProject: boolean): ProfileCatalog {
 	const diagnostics: ProfileDiagnostic[] = [];
 	const profiles = loadDirectory(globalProfilesDir(), "global", diagnostics);
 	if (includeProject) {
-		const projectDir = projectProfilesDir(cwd);
-		const diagnosticStart = diagnostics.length;
-		const projectProfiles = loadDirectory(projectDir, "project", diagnostics);
-		for (const diagnostic of diagnostics.slice(diagnosticStart)) {
-			if (path.dirname(diagnostic.path) === projectDir && diagnostic.path.endsWith(".json")) {
-				profiles.delete(path.basename(diagnostic.path, ".json"));
+		for (const directory of ancestorDirectories(cwd).reverse()) {
+			const projectDir = projectProfilesDir(directory);
+			const diagnosticStart = diagnostics.length;
+			const projectProfiles = loadDirectory(projectDir, "project", diagnostics);
+			for (const diagnostic of diagnostics.slice(diagnosticStart)) {
+				if (path.dirname(diagnostic.path) === projectDir && diagnostic.path.endsWith(".json")) {
+					profiles.delete(path.basename(diagnostic.path, ".json"));
+				}
 			}
+			for (const [name, profile] of projectProfiles) profiles.set(name, profile);
 		}
-		for (const [name, profile] of projectProfiles) profiles.set(name, profile);
 	}
 	return { profiles, diagnostics };
 }
@@ -138,8 +159,10 @@ function resolveSkill(reference: string, profile: LoadedProfile, cwd: string): s
 		: [
 			path.join(getAgentDir(), "skills", expanded),
 			path.join(os.homedir(), ".agents", "skills", expanded),
-			path.join(cwd, CONFIG_DIR_NAME, "skills", expanded),
-			path.join(cwd, ".agents", "skills", expanded),
+			...ancestorDirectories(cwd).flatMap((directory) => [
+				path.join(directory, CONFIG_DIR_NAME, "skills", expanded),
+				path.join(directory, ".agents", "skills", expanded),
+			]),
 		];
 	for (const candidate of candidates) {
 		const resolved = skillCandidate(candidate) ?? skillCandidate(`${candidate}.md`);
@@ -159,7 +182,7 @@ export function resolveProfile(name: string, cwd: string, includeProject: boolea
 	}
 	return {
 		...profile,
-		resolvedSkills: (profile.skills ?? []).map((skill) => resolveSkill(skill, profile, cwd)),
+		resolvedSkills: (profile.skills ?? []).map((skill) => materializeProfileSkill(resolveSkill(skill, profile, cwd))),
 		resolvedExtensions: [],
 	};
 }

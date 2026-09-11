@@ -5,14 +5,16 @@ import { registerParentTools } from "../src/tools/parent.js";
 
 interface CapturedTool {
 	name: string;
-	renderResult?: (result: unknown, options: { isPartial: boolean }, theme: unknown) => { render(width: number): string[] };
+	renderCall?: (args: unknown, theme: unknown, context: { expanded: boolean }) => { render(width: number): string[] };
+	renderResult?: (result: unknown, options: { isPartial: boolean }, theme: unknown, context?: { isError: boolean }) => { render(width: number): string[] };
 }
 
 test("renders configured tools and skills under a subagent launch", () => {
 	const tools: CapturedTool[] = [];
 	const pi = { registerTool: (tool: CapturedTool) => tools.push(tool) } as unknown as ExtensionAPI;
 	registerParentTools(pi, { runs: new Map() } as never);
-	const delegate = tools.find((tool) => tool.name === "delegate_pi");
+	assert.deepEqual(tools.map((tool) => tool.name), ["create_child", "talk", "close_child", "list_child"]);
+	const delegate = tools.find((tool) => tool.name === "create_child");
 	assert.ok(delegate?.renderResult);
 	const theme = {
 		fg: (_color: string, text: string) => text,
@@ -22,15 +24,69 @@ test("renders configured tools and skills under a subagent launch", () => {
 		details: {
 			title: "Research topic",
 			profile: "research",
-			state: "running",
 			adapter: "herdr",
+			sessionPersistence: "persistent",
 			tools: ["web_search", "fetch_content"],
 			skills: ["source-review"],
 		},
 	}, { isPartial: false }, theme);
 	const rendered = component.render(240).join("\n");
-	assert.match(rendered, /Research topic · research · running · herdr/);
+	assert.match(rendered, /Research topic · research · persistent · herdr/);
 	assert.match(rendered, /tools\s+web_search · fetch_content/);
 	assert.match(rendered, /skills\s+source-review/);
-	assert.doesNotMatch(rendered, /ask_parent|return_to_parent/);
+	assert.doesNotMatch(rendered, /talk/);
+});
+
+test("renders talk message content", () => {
+	const tools: CapturedTool[] = [];
+	const pi = { registerTool: (tool: CapturedTool) => tools.push(tool) } as unknown as ExtensionAPI;
+	registerParentTools(pi, { runs: new Map() } as never);
+	const talk = tools.find((tool) => tool.name === "talk");
+	assert.ok(talk?.renderCall);
+	assert.ok(talk.renderResult);
+	const theme = {
+		fg: (_color: string, text: string) => text,
+		bold: (text: string) => text,
+	};
+	const message = Array.from({ length: 12 }, (_, index) => `审查结论 ${index + 1}`).join("\n");
+	const args = { runId: "c3b22f28-abcd", message };
+	const call = talk.renderCall(args, theme, { expanded: false }).render(120).map((line) => line.trimEnd()).join("\n");
+	assert.match(call, /^talk → child\n\n审查结论 1/);
+	assert.match(call, /审查结论 3/);
+	assert.doesNotMatch(call, /审查结论 4/);
+	assert.match(call, /\.\.\. \(9 more lines, 12 total, ctrl\+o to expand\)/);
+	const expanded = talk.renderCall(args, theme, { expanded: true }).render(120).map((line) => line.trimEnd()).join("\n");
+	assert.match(expanded, /审查结论 11\n审查结论 12/);
+	const result = talk.renderResult({ details: {} }, { isPartial: false }, theme, { isError: false })
+		.render(120).join("\n");
+	assert.equal(result.trim(), "");
+});
+
+test("renders open Child sessions as compact cards with readable durations", () => {
+	const tools: CapturedTool[] = [];
+	const pi = { registerTool: (tool: CapturedTool) => tools.push(tool) } as unknown as ExtensionAPI;
+	registerParentTools(pi, { runs: new Map() } as never);
+	const list = tools.find((tool) => tool.name === "list_child");
+	assert.ok(list?.renderCall);
+	assert.ok(list.renderResult);
+	const theme = {
+		fg: (_color: string, text: string) => text,
+		bold: (text: string) => text,
+	};
+	assert.equal(list.renderCall({}, theme, { expanded: false }).render(120).join("\n").trimEnd(), "Children");
+	const rendered = list.renderResult({
+		details: {
+			runs: [{
+				runId: "c3b22f28-abcd",
+				title: "发布舆情 web 与 job",
+				profile: "misc",
+				sessionPersistence: "ephemeral",
+				adapter: "herdr",
+				elapsedSeconds: 2788,
+			}],
+		},
+	}, { isPartial: false }, theme).render(120).join("\n");
+	assert.match(rendered, /● 发布舆情 web 与 job/);
+	assert.match(rendered, /c3b22f28 · misc · ephemeral · herdr · 46m/);
+	assert.doesNotMatch(rendered, /\[failed\]|<misc>|2788s/);
 });

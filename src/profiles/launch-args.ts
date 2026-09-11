@@ -1,6 +1,6 @@
 import type { ResolvedProfile } from "./types.js";
 
-export const CHILD_CONTROL_TOOLS = ["ask_parent", "return_to_parent"] as const;
+export const CHILD_CONTROL_TOOLS = ["talk"] as const;
 
 function unique(values: readonly string[]): string[] {
 	return [...new Set(values)];

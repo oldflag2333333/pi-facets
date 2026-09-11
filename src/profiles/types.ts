@@ -1,4 +1,5 @@
 export type ProfileSource = "global" | "project";
+export type SessionPersistence = "ephemeral" | "persistent";
 
 export interface ProfileDefinition {
 	version: 1;
@@ -6,6 +7,7 @@ export interface ProfileDefinition {
 	description?: string;
 	model?: string;
 	thinkingLevel?: string;
+	sessionPersistence?: SessionPersistence;
 	tools: string[];
 	skills?: string[];
 	instructions?: string;

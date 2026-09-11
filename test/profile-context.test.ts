@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { buildProfilesContext } from "../src/profiles/context.js";
 import type { LoadedProfile, ProfileCatalog } from "../src/profiles/types.js";
 
-function profile(name: string, source: "global" | "project", description?: string): LoadedProfile {
+function profile(name: string, source: "global" | "project", description?: string, persistent = false): LoadedProfile {
 	return {
 		version: 1,
 		name,
@@ -11,6 +11,7 @@ function profile(name: string, source: "global" | "project", description?: strin
 		sourcePath: `/tmp/${name}.json`,
 		tools: ["read"],
 		...(description ? { description } : {}),
+		...(persistent ? { sessionPersistence: "persistent" as const } : {}),
 	};
 }
 
@@ -18,16 +19,16 @@ test("builds a concise startup context with the effective profiles", () => {
 	const catalog: ProfileCatalog = {
 		profiles: new Map([
 			["research", profile("research", "global", "Research the web")],
-			["reviewer", profile("reviewer", "project", "Review this project")],
+			["reviewer", profile("reviewer", "project", "Review this project", true)],
 		]),
 		diagnostics: [],
 	};
 	const context = buildProfilesContext(catalog);
 	assert.match(context, /Available Facets delegation profiles/);
-	assert.match(context, /research \[global\]: Research the web/);
-	assert.match(context, /reviewer \[project\]: Review this project/);
-	assert.match(context, /delegate_pi\.profile/);
-	assert.doesNotMatch(context, /ask_parent|return_to_parent|tools:/);
+	assert.match(context, /research \[global, ephemeral\]: Research the web/);
+	assert.match(context, /reviewer \[project, persistent\]: Review this project/);
+	assert.match(context, /create_child\.profile/);
+	assert.doesNotMatch(context, /talk|tools:/);
 });
 
 test("tells the parent not to delegate when no valid profile exists", () => {

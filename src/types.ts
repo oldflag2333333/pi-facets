@@ -1,7 +1,4 @@
-import type { ResolvedProfile } from "./profiles/types.js";
-
-export type DelegateAdapterId = "auto" | "herdr" | "headless";
-export type RunState = "starting" | "running" | "waiting_parent" | "completed" | "failed" | "cancelled";
+import type { ResolvedProfile, SessionPersistence } from "./profiles/types.js";
 
 export interface DelegateManifest {
 	version: 1;
@@ -15,45 +12,25 @@ export interface DelegateManifest {
 	createdAt: number;
 }
 
-export interface SupervisorQuestion {
+export interface TalkMessage {
 	version: 1;
-	type: "question";
-	requestId: string;
+	id: string;
 	runId: string;
 	token: string;
 	createdAt: number;
-	question: string;
-	choices?: string[];
-	recommendation?: string;
+	message: string;
 }
 
-export interface SupervisorReply {
+export interface CloseMessage {
 	version: 1;
-	type: "answer";
-	requestId: string;
 	runId: string;
 	token: string;
 	createdAt: number;
-	answer: string;
+	reason: string;
 }
 
-export interface DelegateResult {
+export interface ChildClosedMessage {
 	version: 1;
-	type: "result";
-	runId: string;
-	token: string;
-	createdAt: number;
-	status: "completed" | "failed";
-	summary: string;
-	changedFiles?: string[];
-	artifacts?: string[];
-	nextSteps?: string[];
-	error?: string;
-}
-
-export interface CancelMessage {
-	version: 1;
-	type: "cancel";
 	runId: string;
 	token: string;
 	createdAt: number;
@@ -61,10 +38,9 @@ export interface CancelMessage {
 }
 
 export interface SurfaceHandle {
-	adapter: "herdr" | "headless";
+	adapter: "herdr";
 	tabId?: string;
 	paneId?: string;
-	pid?: number;
 }
 
 export interface RunSnapshot {
@@ -74,14 +50,11 @@ export interface RunSnapshot {
 	title: string;
 	cwd: string;
 	profileName: string;
+	sessionPersistence: SessionPersistence;
 	channelDir: string;
-	state: RunState;
 	createdAt: number;
 	updatedAt: number;
-	deadlineAt: number;
-	closeOnTerminal: boolean;
 	surface?: SurfaceHandle;
-	error?: string;
 }
 
 export interface ChildLaunchSpec {
@@ -97,7 +70,7 @@ export interface ChildLaunchSpec {
 }
 
 export interface ChildSurfaceAdapter {
-	readonly id: "herdr" | "headless";
+	readonly id: "herdr";
 	available(): Promise<boolean>;
 	launch(spec: ChildLaunchSpec, signal?: AbortSignal): Promise<SurfaceHandle>;
 	close(handle: SurfaceHandle): Promise<void>;

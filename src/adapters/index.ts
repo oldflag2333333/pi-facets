@@ -1,30 +1,23 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { HeadlessAdapter } from "./headless.js";
 import { HerdrTabAdapter } from "./herdr.js";
-import type { ChildSurfaceAdapter, DelegateAdapterId, SurfaceHandle } from "../types.js";
+import type { SurfaceHandle } from "../types.js";
 
 export class AdapterRegistry {
-	private readonly adapters: Map<string, ChildSurfaceAdapter>;
+	private readonly herdr: HerdrTabAdapter;
 
 	constructor(pi: ExtensionAPI) {
-		this.adapters = new Map<string, ChildSurfaceAdapter>([
-			["herdr", new HerdrTabAdapter(pi)],
-			["headless", new HeadlessAdapter()],
-		]);
+		this.herdr = new HerdrTabAdapter(pi);
 	}
 
-	async resolve(requested: DelegateAdapterId): Promise<ChildSurfaceAdapter> {
-		if (requested !== "auto") {
-			const adapter = this.adapters.get(requested);
-			if (!adapter || !(await adapter.available())) throw new Error(`Requested child adapter '${requested}' is unavailable.`);
-			return adapter;
+	async resolve(): Promise<HerdrTabAdapter> {
+		if (!(await this.herdr.available())) {
+			throw new Error("Facets requires Herdr, but the Herdr adapter is unavailable.");
 		}
-		const herdr = this.adapters.get("herdr")!;
-		return await herdr.available() ? herdr : this.adapters.get("headless")!;
+		return this.herdr;
 	}
 
 	async close(handle: SurfaceHandle | undefined): Promise<void> {
 		if (!handle) return;
-		await this.adapters.get(handle.adapter)?.close(handle);
+		await this.herdr.close(handle);
 	}
 }

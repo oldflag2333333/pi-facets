@@ -38,7 +38,7 @@ function childArgs(spec: ChildLaunchSpec): string[] {
 		"--no-extensions",
 		"-e", spec.entryPath,
 		...(fs.existsSync(herdrIntegration) ? ["-e", herdrIntegration] : []),
-		"--no-session",
+		...(spec.profile.sessionPersistence === "persistent" ? [] : ["--no-session"]),
 		"--no-approve",
 		"--name", `[sub] ${safeLabel(spec.title)}`,
 		...childCapabilityArgs(spec.profile, spec.entryPath),

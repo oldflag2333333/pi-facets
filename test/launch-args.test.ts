@@ -10,7 +10,7 @@ const profile: ResolvedProfile = {
 	sourcePath: "/tmp/reviewer.json",
 	model: "provider/model/name",
 	thinkingLevel: "provider-level",
-	tools: ["read", "ask_parent"],
+	tools: ["read", "talk"],
 	skills: ["review"],
 	resolvedSkills: ["/tmp/review/SKILL.md"],
 	resolvedExtensions: ["/tmp/web-extension.ts"],
@@ -19,7 +19,7 @@ const profile: ResolvedProfile = {
 test("builds one child capability argument set from the resolved profile", () => {
 	assert.deepEqual(childCapabilityArgs(profile, "/tmp/facets.ts"), [
 		"-e", "/tmp/web-extension.ts",
-		"--tools", "read,ask_parent,return_to_parent",
+		"--tools", "read,talk",
 		"--model", "provider/model/name",
 		"--thinking", "provider-level",
 		"--no-skills",

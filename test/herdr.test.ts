@@ -19,6 +19,7 @@ const spec: ChildLaunchSpec = {
 	profile: {
 		version: 1,
 		name: "research",
+		sessionPersistence: "persistent",
 		tools: ["web_search"],
 		source: "global",
 		sourcePath: "/tmp/research.json",
@@ -58,6 +59,7 @@ test("starts an idle Pi before submitting work through herdr agent prompt", asyn
 		const metadata = calls.find((call) => call.args[0] === "pane" && call.args[1] === "report-metadata");
 		assert.equal(start.args.includes(spec.task), false);
 		assert.equal(start.args.includes(integration), true);
+		assert.equal(start.args.includes("--no-session"), false);
 		assert.ok(metadata);
 		assert.equal(metadata.args.includes("facets_role=subagent"), true);
 		assert.equal(metadata.args.includes("facets_parent_session=parent-session-1"), true);

@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import { ParentContextRuntime } from "./parent-context.js";
 import { StartupProfileRuntime } from "./profiles/runtime.js";
 import { ParentRunManager, NOTICE_TYPE } from "./run-manager.js";
 import { registerChild } from "./tools/child.js";
@@ -20,17 +21,10 @@ export default function piDelegate(pi: ExtensionAPI): void {
 	const manager = new ParentRunManager(pi);
 	registerParentTools(pi, manager);
 	new StartupProfileRuntime(pi).register();
+	new ParentContextRuntime(pi).register();
 
 	pi.registerMessageRenderer(NOTICE_TYPE, (message, _options, theme) => {
-		const details = message.details as { state?: string } | undefined;
-		const icon = details?.state === "completed"
-			? theme.fg("success", "✓")
-			: details?.state === "failed" || details?.state === "cancelled"
-				? theme.fg("error", "✗")
-				: details?.state === "waiting_parent"
-					? theme.fg("warning", "?")
-					: theme.fg("accent", "↗");
-		return new Text(`${icon} ${theme.fg("muted", contentText(message.content))}`, 0, 0);
+		return new Text(`${theme.fg("accent", "•")} ${theme.fg("muted", contentText(message.content))}`, 0, 0);
 	});
 
 	pi.on("session_start", (_event, ctx) => manager.start(ctx));
@@ -43,7 +37,5 @@ export default function piDelegate(pi: ExtensionAPI): void {
 
 	pi.on("agent_settled", () => manager.settled());
 
-	pi.on("session_shutdown", async (event) => {
-		await manager.shutdown(event.reason !== "reload");
-	});
+	pi.on("session_shutdown", () => manager.shutdown());
 }
