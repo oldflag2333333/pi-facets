@@ -148,7 +148,7 @@ export class ParentRunManager {
 				entryPath,
 			}, signal);
 			this.save(run);
-			this.notify(`Child created: ${run.title}`);
+			this.recordNotice(`Child created: ${run.title}`);
 			return run;
 		} catch (error) {
 			this.runs.delete(run.runId);
@@ -176,7 +176,7 @@ export class ParentRunManager {
 			if (payload.runId === run.runId) this.payloads.delete(id);
 		}
 		removeChannel(run.channelDir);
-		this.notify(`Child closed: ${run.title}`);
+		this.recordNotice(`Child closed: ${run.title}`);
 		return run;
 	}
 
@@ -203,9 +203,10 @@ export class ParentRunManager {
 			if (readChildClosed(run.channelDir, manifest)) {
 				this.runs.delete(run.runId);
 				removeChannel(run.channelDir);
-				this.notify(`Child closed: ${run.title}`);
+				this.recordNotice(`Child closed: ${run.title}`);
 				continue;
 			}
+			if (!this.ctx?.isIdle()) continue;
 			for (const message of listTalkToParent(run.channelDir, manifest)) {
 				const key = `${run.runId}:${message.id}`;
 				if (this.seenMessages.has(key)) continue;
@@ -217,8 +218,13 @@ export class ParentRunManager {
 					text: `[Facets child message]\nChild '${run.title}' (${run.runId}) says:\n${message.message}\n\nUse talk with runId '${run.runId}' to respond, or close_child when the delivery is accepted and no more work is needed.`,
 				});
 				this.notify(`Message from child: ${run.title}`);
+				return;
 			}
 		}
+	}
+
+	private recordNotice(content: string): void {
+		this.pi.appendEntry(NOTICE_TYPE, content);
 	}
 
 	private notify(content: string): void {

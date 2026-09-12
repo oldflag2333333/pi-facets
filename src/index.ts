@@ -26,6 +26,9 @@ export default function piDelegate(pi: ExtensionAPI): void {
 	pi.registerMessageRenderer(NOTICE_TYPE, (message, _options, theme) => {
 		return new Text(`${theme.fg("accent", "•")} ${theme.fg("muted", contentText(message.content))}`, 0, 0);
 	});
+	pi.registerEntryRenderer(NOTICE_TYPE, (entry, _options, theme) => {
+		return new Text(`${theme.fg("accent", "•")} ${theme.fg("muted", contentText(entry.data))}`, 0, 0);
+	});
 
 	pi.on("session_start", (_event, ctx) => manager.start(ctx));
 
