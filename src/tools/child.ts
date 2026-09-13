@@ -9,6 +9,7 @@ import {
 	talkToParent,
 	writeChildClosed,
 } from "../channel.js";
+import { buildChildSystemPrompt } from "../profiles/system-prompt.js";
 import { talkView } from "../talk-render.js";
 import type { DelegateManifest } from "../types.js";
 
@@ -68,12 +69,7 @@ export function registerChild(pi: ExtensionAPI): void {
 	});
 
 	pi.on("before_agent_start", (event) => {
-		const profileInstructions = loaded.manifest.profile.instructions
-			? `\n\n## Facets profile: ${loaded.manifest.profile.name}\n${loaded.manifest.profile.instructions}`
-			: "";
-		return {
-			systemPrompt: `${event.systemPrompt}\n\n## Facets child protocol\nYou are an isolated child Pi working with a Parent Pi. You have not received the Parent's conversation and must not read Pi session files. Use talk whenever you need information from the Parent or need to deliver work. Each talk sends one message to the Parent and ends the current turn. Remain available after delivery. The Parent alone decides whether to respond, request more work, or close this child session. Never close the session yourself.${profileInstructions}`,
-		};
+		return { systemPrompt: buildChildSystemPrompt(event.systemPrompt, loaded.manifest.profile) };
 	});
 
 	pi.registerTool({

@@ -71,7 +71,10 @@ export function loadParentContext(cwd: string, includeProject: boolean): ParentC
 export class ParentContextRuntime {
 	private content = "";
 
-	constructor(private readonly pi: ExtensionAPI) {}
+	constructor(
+		private readonly pi: ExtensionAPI,
+		private readonly shouldAppend: () => boolean = () => true,
+	) {}
 
 	register(): void {
 		this.pi.on("session_start", (_event, ctx) => {
@@ -85,7 +88,7 @@ export class ParentContextRuntime {
 		});
 
 		this.pi.on("before_agent_start", (event) => {
-			if (!this.content) return;
+			if (!this.content || !this.shouldAppend()) return;
 			return { systemPrompt: `${event.systemPrompt}\n\n${this.content}` };
 		});
 	}

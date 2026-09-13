@@ -19,9 +19,10 @@ export default function piDelegate(pi: ExtensionAPI): void {
 	}
 
 	const manager = new ParentRunManager(pi);
+	const startupProfile = new StartupProfileRuntime(pi);
 	registerParentTools(pi, manager);
-	new StartupProfileRuntime(pi).register();
-	new ParentContextRuntime(pi).register();
+	startupProfile.register();
+	new ParentContextRuntime(pi, () => !startupProfile.hasSystemPromptOverride()).register();
 
 	pi.registerMessageRenderer(NOTICE_TYPE, (message, _options, theme) => {
 		return new Text(`${theme.fg("accent", "•")} ${theme.fg("muted", contentText(message.content))}`, 0, 0);

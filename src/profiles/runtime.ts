@@ -2,6 +2,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { buildProfilesContext } from "./context.js";
 import { loadProfiles, resolveProfile } from "./loader.js";
+import { buildStartupSystemPrompt } from "./system-prompt.js";
 import type { ResolvedProfile } from "./types.js";
 
 export class StartupProfileRuntime {
@@ -10,6 +11,10 @@ export class StartupProfileRuntime {
 	private profilesContext = "";
 
 	constructor(private readonly pi: ExtensionAPI) {}
+
+	hasSystemPromptOverride(): boolean {
+		return this.active?.systemPrompt !== undefined;
+	}
 
 	register(): void {
 		this.pi.registerFlag("profile", {
@@ -51,12 +56,8 @@ export class StartupProfileRuntime {
 		});
 
 		this.pi.on("before_agent_start", (event) => {
-			const activeInstructions = this.active?.instructions
-				? `## Active Facets profile: ${this.active.name}\n${this.active.instructions}`
-				: "";
-			const additions = [this.profilesContext, activeInstructions].filter(Boolean).join("\n\n");
-			if (!additions) return;
-			return { systemPrompt: `${event.systemPrompt}\n\n${additions}` };
+			const systemPrompt = buildStartupSystemPrompt(event.systemPrompt, this.active, this.profilesContext);
+			return systemPrompt === undefined ? undefined : { systemPrompt };
 		});
 
 		this.pi.registerCommand("profiles", {

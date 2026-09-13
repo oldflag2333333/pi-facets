@@ -31,14 +31,23 @@ Changes take effect after `/reload`.
 
 ## Startup profiles
 
-Facets does not ship built-in profiles. Profiles are user-owned JSON files loaded from:
+Facets does not ship built-in profiles. Profiles are user-owned directories loaded from global or trusted project hierarchies:
 
 ```text
-~/.pi/agent/facets/profiles/*.json                 # global
-<cwd-or-ancestor>/.pi/facets/profiles/*.json        # trusted project hierarchy
+~/.pi/agent/facets/profiles/reviewer/
+├── config.json
+└── SYSTEM.md                                      # optional
+
+<cwd-or-ancestor>/.pi/facets/profiles/reviewer/
+├── config.json
+└── SYSTEM.md                                      # optional
 ```
 
-Facets walks from the Parent Pi working directory to the filesystem root. A profile closer to the current working directory overrides a same-named ancestor profile, and any trusted project profile overrides a same-named global profile. This lets a Pi started under `project/workspace/` use profiles defined at `project/.pi/facets/profiles/`. The file name must match `name`:
+Legacy single-file profiles at `profiles/*.json` remain supported. A directory name (or legacy JSON file stem) must match `name`; defining both forms with the same name in one scope is an error.
+
+Facets walks from the Parent Pi working directory to the filesystem root. A profile closer to the current working directory overrides a same-named ancestor profile, and any trusted project profile overrides a same-named global profile. This lets a Pi started under `project/workspace/` use profiles defined at `project/.pi/facets/profiles/`.
+
+`reviewer/config.json`:
 
 ```json
 {
@@ -53,6 +62,8 @@ Facets walks from the Parent Pi working directory to the filesystem root. A prof
   "instructions": "Review only; do not modify files."
 }
 ```
+
+When `SYSTEM.md` is present, it is the complete handwritten system prompt for that profile. Facets does not retain Pi's generated role, tool snippets, guidelines, project context, skill catalog, working-directory line, profile catalog, `PARENT.md`, or `config.json` `instructions`. A delegated Child receives only that content plus the mandatory Facets child protocol; a directly started `pi --profile reviewer` receives the file content as-is. Tool schemas and the configured capability allowlist still apply independently. Without `SYSTEM.md`, Pi's normal prompt construction and the existing `instructions` behavior are unchanged.
 
 `thinkingLevel` is passed to Pi rather than constrained by a Facets-owned enum. `sessionPersistence` is `ephemeral` by default or `persistent`: ephemeral conversations remain in memory only, while persistent conversations are saved by Pi. Both remain open until the Parent calls `close_child` or the user closes the Herdr tab. Skill entries may be standard skill names or paths relative to the profile file. Named project skills are also resolved from the Parent Pi working directory and its ancestors; explicit skill paths remain relative to the profile file. Selecting a skill in a profile is an explicit capability choice, so Facets makes it model-visible even when its source declares `disable-model-invocation: true`; the source is not modified, and relative skill assets remain available through a private runtime mirror. Valid profile names, scope, and descriptions are injected into the Parent Pi system context only as a capability catalog, so it can select a profile without calling a discovery tool; Parent routing policy belongs in `PARENT.md`. Users can still run `/profiles` for diagnostics; profiles cannot be switched inside a running session.
 

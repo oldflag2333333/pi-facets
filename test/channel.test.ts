@@ -24,6 +24,7 @@ const profile = {
 	description: "Review only",
 	tools: ["read", "grep"],
 	thinkingLevel: "high",
+	systemPrompt: "Handwritten system prompt.",
 	source: "global" as const,
 	sourcePath: "/tmp/reviewer.json",
 	resolvedSkills: [],
@@ -61,6 +62,7 @@ test("creates an isolated manifest and round-trips talk in both directions", () 
 	const manifest = readManifest(created.channelDir);
 	assert.equal(manifest.runId, "run-1");
 	assert.equal(manifest.token.length, 64);
+	assert.equal(manifest.profile.systemPrompt, "Handwritten system prompt.");
 
 	const parentMessage = talkToParent(created.channelDir, manifest, "Delivery from Child");
 	const childMessage = talkToChild(created.channelDir, manifest, "Feedback from Parent");

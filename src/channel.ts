@@ -77,7 +77,8 @@ function validProfile(value: unknown): boolean {
 		&& (profile.model === undefined || typeof profile.model === "string")
 		&& (profile.thinkingLevel === undefined || typeof profile.thinkingLevel === "string")
 		&& (profile.sessionPersistence === undefined || profile.sessionPersistence === "ephemeral" || profile.sessionPersistence === "persistent")
-		&& (profile.instructions === undefined || typeof profile.instructions === "string"));
+		&& (profile.instructions === undefined || typeof profile.instructions === "string")
+		&& (profile.systemPrompt === undefined || typeof profile.systemPrompt === "string"));
 }
 
 export function readManifest(channelDir: string): DelegateManifest {
