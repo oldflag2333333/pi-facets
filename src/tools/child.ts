@@ -74,18 +74,18 @@ export function registerChild(pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "talk",
-		label: "Talk",
-		description: "Send one message to the Parent Pi and end the current turn. Use it to ask for information or deliver work.",
+		label: "talk",
+		description: "Send one message to the Parent Pi and end the current turn. Use it to ask for information or deliver work. Format non-trivial messages as readable Markdown with paragraph breaks and lists.",
 		promptSnippet: "Send a message to the Parent Pi",
 		promptGuidelines: ["Use talk whenever the child needs to communicate with the Parent; the Parent decides when to close the child session."],
 		executionMode: "sequential",
 		parameters: Type.Object({
-			message: Type.String({ description: "Message to the Parent." }),
+			message: Type.String({ description: "Message to the other Agent. For non-trivial content, use readable Markdown with paragraph breaks and lists." }),
 		}),
 		renderCall(args, theme, context) {
 			const message = typeof args.message === "string" ? args.message : "";
 			const view = talkView(message, context.expanded);
-			let text = `${theme.fg("toolTitle", theme.bold("talk"))} ${theme.fg("muted", "→ parent")}`;
+			let text = `${theme.fg("accent", "›")} ${theme.fg("toolTitle", theme.bold("message to parent"))} ${theme.fg("muted", `· ${loaded.manifest.title}`)}`;
 			if (message) text += `\n\n${view.lines.map((line) => theme.fg("toolOutput", line)).join("\n")}`;
 			if (view.remaining > 0) {
 				text += theme.fg("muted", `\n... (${view.remaining} more lines, ${view.totalLines} total, ctrl+o to expand)`);
@@ -101,7 +101,7 @@ export function registerChild(pi: ExtensionAPI): void {
 			};
 		},
 		renderResult(result, _options, theme, context) {
-			if (context.isError) return new Text(`\n${theme.fg("error", contentText(result.content) || "Talk failed")}`, 0, 0);
+			if (context.isError) return new Text(`\n${theme.fg("error", contentText(result.content) || "talk failed")}`, 0, 0);
 			return new Container();
 		},
 	});

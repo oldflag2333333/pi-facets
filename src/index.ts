@@ -4,6 +4,7 @@ import { ParentContextRuntime } from "./parent-context.js";
 import { StartupProfileRuntime } from "./profiles/runtime.js";
 import { ParentRunManager, NOTICE_TYPE } from "./run-manager.js";
 import { registerChild } from "./tools/child.js";
+import { talkView } from "./talk-render.js";
 import { registerParentTools } from "./tools/parent.js";
 
 function contentText(content: unknown): string {
@@ -24,22 +25,23 @@ export default function piDelegate(pi: ExtensionAPI): void {
 	startupProfile.register();
 	new ParentContextRuntime(pi, () => !startupProfile.hasSystemPromptOverride()).register();
 
-	pi.registerMessageRenderer(NOTICE_TYPE, (message, _options, theme) => {
-		return new Text(`${theme.fg("accent", "•")} ${theme.fg("muted", contentText(message.content))}`, 0, 0);
+	pi.registerMessageRenderer(NOTICE_TYPE, (message, options, theme) => {
+		const details = message.details as { title?: string; message?: string } | undefined;
+		const title = details?.title ?? "Child";
+		const childMessage = details?.message ?? "";
+		const view = talkView(childMessage, options.expanded);
+		let text = `${theme.fg("accent", "›")} ${theme.fg("toolTitle", theme.bold("message from child"))} ${theme.fg("muted", `· ${title}`)}`;
+		if (childMessage) text += `\n\n${view.lines.map((line) => theme.fg("toolOutput", line)).join("\n")}`;
+		if (view.remaining > 0) {
+			text += theme.fg("muted", `\n... (${view.remaining} more lines, ${view.totalLines} total, ctrl+o to expand)`);
+		}
+		return new Text(text, 0, 0);
 	});
 	pi.registerEntryRenderer(NOTICE_TYPE, (entry, _options, theme) => {
 		return new Text(`${theme.fg("accent", "•")} ${theme.fg("muted", contentText(entry.data))}`, 0, 0);
 	});
 
 	pi.on("session_start", (_event, ctx) => manager.start(ctx));
-
-	pi.on("context", (event) => {
-		const injected = manager.contextMessages();
-		if (injected.length === 0) return;
-		return { messages: [...event.messages, ...injected] };
-	});
-
-	pi.on("agent_settled", () => manager.settled());
 
 	pi.on("session_shutdown", () => manager.shutdown());
 }

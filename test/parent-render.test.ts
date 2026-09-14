@@ -40,7 +40,8 @@ test("renders configured tools and skills under a subagent launch", () => {
 test("renders talk message content", () => {
 	const tools: CapturedTool[] = [];
 	const pi = { registerTool: (tool: CapturedTool) => tools.push(tool) } as unknown as ExtensionAPI;
-	registerParentTools(pi, { runs: new Map() } as never);
+	const runs = new Map([["c3b22f28-abcd", { runId: "c3b22f28-abcd", title: "Review MR" }]]);
+	registerParentTools(pi, { runs } as never);
 	const talk = tools.find((tool) => tool.name === "talk");
 	assert.ok(talk?.renderCall);
 	assert.ok(talk.renderResult);
@@ -51,7 +52,7 @@ test("renders talk message content", () => {
 	const message = Array.from({ length: 12 }, (_, index) => `审查结论 ${index + 1}`).join("\n");
 	const args = { runId: "c3b22f28-abcd", message };
 	const call = talk.renderCall(args, theme, { expanded: false }).render(120).map((line) => line.trimEnd()).join("\n");
-	assert.match(call, /^talk → child\n\n审查结论 1/);
+	assert.match(call, /^› message to child · Review MR\n\n审查结论 1/);
 	assert.match(call, /审查结论 3/);
 	assert.doesNotMatch(call, /审查结论 4/);
 	assert.match(call, /\.\.\. \(9 more lines, 12 total, ctrl\+o to expand\)/);
@@ -73,7 +74,7 @@ test("renders open Child sessions as compact cards with readable durations", () 
 		fg: (_color: string, text: string) => text,
 		bold: (text: string) => text,
 	};
-	assert.equal(list.renderCall({}, theme, { expanded: false }).render(120).join("\n").trimEnd(), "Children");
+	assert.equal(list.renderCall({}, theme, { expanded: false }).render(120).join("\n").trimEnd(), "children");
 	const rendered = list.renderResult({
 		details: {
 			runs: [{
@@ -86,7 +87,7 @@ test("renders open Child sessions as compact cards with readable durations", () 
 			}],
 		},
 	}, { isPartial: false }, theme).render(120).join("\n");
-	assert.match(rendered, /● 发布舆情 web 与 job/);
+	assert.match(rendered, /• 发布舆情 web 与 job/);
 	assert.match(rendered, /c3b22f28 · misc · ephemeral · herdr · 46m/);
 	assert.doesNotMatch(rendered, /\[failed\]|<misc>|2788s/);
 });

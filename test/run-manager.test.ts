@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createChannel, listTalkToChild, readManifest, talkToParent } from "../src/channel.js";
+import { createChannel, listTalkToChild, listTalkToParent, readManifest, talkToParent } from "../src/channel.js";
 import { ParentRunManager } from "../src/run-manager.js";
 import type { RunSnapshot } from "../src/types.js";
 
@@ -103,7 +103,6 @@ test("waits for an idle Parent and triggers exactly one turn for a Child message
 	} as unknown as ExtensionContext;
 	manager.start(ctx);
 	assert.equal(messages.length, 0);
-	assert.equal(manager.contextMessages().length, 0);
 
 	idle = true;
 	await new Promise((resolve) => setTimeout(resolve, 500));
@@ -113,10 +112,8 @@ test("waits for an idle Parent and triggers exactly one turn for a Child message
 	const notification = messages[0];
 	assert.ok(notification);
 	assert.deepEqual(notification.options, { deliverAs: "followUp", triggerTurn: true });
-	assert.match(String((notification.message as { content?: string }).content), /Message from child: Review MR/);
-	const injected = manager.contextMessages()[0];
-	assert.ok(injected && injected.role === "user");
-	const text = Array.isArray(injected.content) ? injected.content[0] : undefined;
-	assert.ok(text?.type === "text");
-	assert.match(text.text, /Review complete\./);
+	const delivered = notification.message as { content?: string; details?: { title?: string; message?: string } };
+	assert.match(String(delivered.content), /Review complete\./);
+	assert.deepEqual(delivered.details, { title: "Review MR", message: "Review complete." });
+	assert.deepEqual(listTalkToParent(run.channelDir, readManifest(run.channelDir)), []);
 });

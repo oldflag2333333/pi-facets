@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { AdapterRegistry } from "./adapters/index.js";
 import {
@@ -20,13 +19,6 @@ import type { DelegateManifest, RunSnapshot } from "./types.js";
 const RUN_ENTRY = "facets-run";
 const NOTICE_TYPE = "facets-notice";
 const POLL_MS = 400;
-
-interface PendingPayload {
-	id: string;
-	messageId: string;
-	text: string;
-	runId: string;
-}
 
 function parseSnapshot(value: unknown): RunSnapshot | undefined {
 	if (!value || typeof value !== "object") return;
@@ -55,7 +47,6 @@ export class ParentRunManager {
 	readonly runs = new Map<string, RunSnapshot>();
 	private readonly adapters: AdapterRegistry;
 	private readonly seenMessages = new Set<string>();
-	private readonly payloads = new Map<string, PendingPayload>();
 	private poller?: ReturnType<typeof setInterval>;
 	private ctx?: ExtensionContext;
 
@@ -112,6 +103,7 @@ export class ParentRunManager {
 		if (!this.ctx) throw new Error("Facets is not attached to an active parent session.");
 		const runId = randomUUID();
 		const parentSessionId = this.ctx.sessionManager.getSessionId();
+		const projectTrusted = this.ctx.isProjectTrusted();
 		const channel = createChannel({
 			runId,
 			parentSessionId,
@@ -142,6 +134,7 @@ export class ParentRunManager {
 				title: input.title,
 				task: input.task,
 				cwd: input.cwd,
+				projectTrusted,
 				profile: input.profile,
 				channelDir: channel.channelDir,
 				token: channel.token,
@@ -172,28 +165,9 @@ export class ParentRunManager {
 		} catch {}
 		await this.adapters.close(run.surface);
 		this.runs.delete(run.runId);
-		for (const [id, payload] of this.payloads) {
-			if (payload.runId === run.runId) this.payloads.delete(id);
-		}
 		removeChannel(run.channelDir);
 		this.recordNotice(`Child closed: ${run.title}`);
 		return run;
-	}
-
-	contextMessages(): AgentMessage[] {
-		return [...this.payloads.values()].map((payload) => ({
-			role: "user" as const,
-			content: [{ type: "text" as const, text: payload.text }],
-			timestamp: Date.now(),
-		}));
-	}
-
-	settled(): void {
-		for (const [id, payload] of this.payloads) {
-			this.payloads.delete(id);
-			const run = this.runs.get(payload.runId);
-			if (run) removeTalk(run.channelDir, "to-parent", payload.messageId);
-		}
 	}
 
 	private poll(): void {
@@ -211,13 +185,8 @@ export class ParentRunManager {
 				const key = `${run.runId}:${message.id}`;
 				if (this.seenMessages.has(key)) continue;
 				this.seenMessages.add(key);
-				this.payloads.set(key, {
-					id: key,
-					messageId: message.id,
-					runId: run.runId,
-					text: `[Facets child message]\nChild '${run.title}' (${run.runId}) says:\n${message.message}\n\nUse talk with runId '${run.runId}' to respond, or close_child when the delivery is accepted and no more work is needed.`,
-				});
-				this.notify(`Message from child: ${run.title}`);
+				this.notify(run, message.message);
+				removeTalk(run.channelDir, "to-parent", message.id);
 				return;
 			}
 		}
@@ -227,11 +196,12 @@ export class ParentRunManager {
 		this.pi.appendEntry(NOTICE_TYPE, content);
 	}
 
-	private notify(content: string): void {
+	private notify(run: RunSnapshot, message: string): void {
 		this.pi.sendMessage({
 			customType: NOTICE_TYPE,
-			content,
+			content: `[Facets child message]\nChild '${run.title}' (${run.runId}) says:\n${message}\n\nUse talk with runId '${run.runId}' to respond, or close_child when the delivery is accepted and no more work is needed.`,
 			display: true,
+			details: { title: run.title, message },
 		}, { deliverAs: "followUp", triggerTurn: true });
 	}
 }

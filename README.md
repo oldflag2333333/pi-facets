@@ -99,12 +99,13 @@ Children launch with:
 - a Herdr tab; no headless fallback is available
 - `--no-session` for ephemeral profiles; persistent profiles use a normal saved Pi session
 - `--no-extensions -e <Facets>` so unrelated ambient extensions are not inherited
+- `--approve` when the Parent project is trusted, otherwise `--no-approve`
 - a fresh initial prompt rather than a parent session fork
 - an explicit tool allowlist
 
 A child receives the configured profile tools plus the mandatory `talk` protocol tool. The parent resolves the profile once and stores that immutable launch snapshot in the channel manifest, so later config edits cannot change an already-running child.
 
-The Parent TUI renders each launch with the selected profile plus its configured tool and skill names; long capability lists are compacted. It otherwise receives only compact lifecycle notices. Child `talk` messages are injected transiently with Pi's `context` event for the Parent turn that handles them; they are not rendered as Child transcripts.
+The Parent TUI renders each launch with the selected profile plus its configured tool and skill names; long capability lists are compacted. It otherwise receives only compact lifecycle notices. Each Child `talk` message is stored as one visible custom message in the Parent session, rendered with the Child title and a three-line preview. This exposes only explicit `talk` deliveries, never the Child transcript.
 
 This is a protocol boundary, not an operating-system sandbox. A child with shell access runs as the same OS user and may be able to access files outside the project. A future hardened adapter should run write-capable children in a container or restricted worktree environment.
 

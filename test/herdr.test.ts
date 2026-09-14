@@ -13,6 +13,7 @@ const spec: ChildLaunchSpec = {
 	title: "Research status",
 	task: "Research this topic and summarize it.",
 	cwd: "/tmp/project",
+	projectTrusted: true,
 	channelDir: "/tmp/channel",
 	token: "token",
 	entryPath: "/tmp/facets.ts",
@@ -60,6 +61,8 @@ test("starts an idle Pi before submitting work through herdr agent prompt", asyn
 		assert.equal(start.args.includes(spec.task), false);
 		assert.equal(start.args.includes(integration), true);
 		assert.equal(start.args.includes("--no-session"), false);
+		assert.equal(start.args.includes("--approve"), true);
+		assert.equal(start.args.includes("--no-approve"), false);
 		assert.ok(metadata);
 		assert.equal(metadata.args.includes("facets_role=subagent"), true);
 		assert.equal(metadata.args.includes("facets_parent_session=parent-session-1"), true);

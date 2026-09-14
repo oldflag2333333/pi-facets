@@ -63,6 +63,7 @@ export interface ChildLaunchSpec {
 	title: string;
 	task: string;
 	cwd: string;
+	projectTrusted: boolean;
 	profile: ResolvedProfile;
 	channelDir: string;
 	token: string;

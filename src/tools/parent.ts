@@ -46,7 +46,7 @@ function compactCapabilityList(values: string[], maxCharacters = 160): string {
 export function registerParentTools(pi: ExtensionAPI, manager: ParentRunManager): void {
 	pi.registerTool({
 		name: "create_child",
-		label: "Create Child",
+		label: "create child",
 		description: "Create a fresh, context-isolated Child Pi in Herdr for a self-contained task. The Child remains open until the Parent calls close_child or the user closes it manually.",
 		promptSnippet: "Create a focused Child Pi in Herdr with an explicit Facets profile",
 		promptGuidelines: [
@@ -84,6 +84,7 @@ export function registerParentTools(pi: ExtensionAPI, manager: ParentRunManager)
 					adapter: run.surface?.adapter,
 					...capabilityDetails,
 				},
+				terminate: true,
 			};
 		},
 		renderCall(args, theme) {
@@ -100,7 +101,7 @@ export function registerParentTools(pi: ExtensionAPI, manager: ParentRunManager)
 				sessionPersistence?: string;
 			} | undefined;
 			const icon = isPartial ? theme.fg("warning", "◌") : theme.fg("success", "✓");
-			const summary = `${icon} ${theme.fg("accent", details?.title ?? "Child")} ${theme.fg("muted", `· ${details?.profile ?? "profile?"} · ${details?.sessionPersistence ?? "ephemeral"}${details?.adapter ? ` · ${details.adapter}` : ""}`)}`;
+			const summary = `${icon} ${theme.fg("accent", details?.title ?? "child")} ${theme.fg("muted", `· ${details?.profile ?? "profile?"} · ${details?.sessionPersistence ?? "ephemeral"}${details?.adapter ? ` · ${details.adapter}` : ""}`)}`;
 			const tools = `${theme.fg("dim", "  tools ")}${theme.fg("muted", compactCapabilityList(details?.tools ?? []))}`;
 			const skills = `${theme.fg("dim", "  skills")}${theme.fg("muted", ` ${compactCapabilityList(details?.skills ?? [])}`)}`;
 			return new Text(`${summary}\n${tools}\n${skills}`, 0, 0);
@@ -110,17 +111,22 @@ export function registerParentTools(pi: ExtensionAPI, manager: ParentRunManager)
 	pi.registerTool({
 		name: "talk",
 		label: "Talk",
-		description: "Send one message to an existing Child Pi. The Child receives queued messages in order when it is idle.",
+		description: "Send one message to an existing Child Pi. The Child receives queued messages in order when it is idle. Format non-trivial messages as readable Markdown with paragraph breaks and lists.",
 		promptSnippet: "Send a message to an existing Child Pi",
 		executionMode: "sequential",
 		parameters: Type.Object({
 			runId: Type.String({ description: "Full Child run ID or a unique prefix." }),
-			message: Type.String({ description: "Message to the Child." }),
+			message: Type.String({ description: "Message to the other Agent. For non-trivial content, use readable Markdown with paragraph breaks and lists." }),
 		}),
 		renderCall(args, theme, context) {
 			const message = typeof args.message === "string" ? args.message : "";
+			const requestedRunId = typeof args.runId === "string" ? args.runId : "";
+			const run = requestedRunId
+				? manager.runs.get(requestedRunId) ?? [...manager.runs.values()].find((candidate) => candidate.runId.startsWith(requestedRunId))
+				: undefined;
+			const title = run ? ` ${theme.fg("muted", `· ${run.title}`)}` : "";
 			const view = talkView(message, context.expanded);
-			let text = `${theme.fg("toolTitle", theme.bold("talk"))} ${theme.fg("muted", "→ child")}`;
+			let text = `${theme.fg("accent", "›")} ${theme.fg("toolTitle", theme.bold("message to child"))}${title}`;
 			if (message) text += `\n\n${view.lines.map((line) => theme.fg("toolOutput", line)).join("\n")}`;
 			if (view.remaining > 0) {
 				text += theme.fg("muted", `\n... (${view.remaining} more lines, ${view.totalLines} total, ctrl+o to expand)`);
@@ -135,14 +141,14 @@ export function registerParentTools(pi: ExtensionAPI, manager: ParentRunManager)
 			};
 		},
 		renderResult(_result, _options, theme, context) {
-			if (context.isError) return new Text(theme.fg("error", "\nTalk failed"), 0, 0);
+			if (context.isError) return new Text(theme.fg("error", "\ntalk failed"), 0, 0);
 			return new Container();
 		},
 	});
 
 	pi.registerTool({
 		name: "close_child",
-		label: "Close Child",
+		label: "close child",
 		description: "Close a Child Pi session and its Herdr tab. Use after the delivery is accepted or when the user asks to close it.",
 		parameters: Type.Object({
 			runId: Type.String({ description: "Full Child run ID or a unique prefix." }),
@@ -156,7 +162,7 @@ export function registerParentTools(pi: ExtensionAPI, manager: ParentRunManager)
 
 	pi.registerTool({
 		name: "list_child",
-		label: "List Child",
+		label: "list child",
 		description: "List open Child sessions with bounded metadata. Never returns transcripts.",
 		parameters: Type.Object({}),
 		async execute() {
@@ -171,11 +177,11 @@ export function registerParentTools(pi: ExtensionAPI, manager: ParentRunManager)
 			}));
 			const text = runs.length
 				? runs.map((run) => `- ${run.runId.slice(0, 8)} ${run.title} <${run.profile}, ${run.sessionPersistence}> (${formatElapsed(run.elapsedSeconds)})`).join("\n")
-				: "No open Child sessions.";
+				: "no open child sessions.";
 			return { content: [{ type: "text", text }], details: { runs } };
 		},
 		renderCall(_args, theme) {
-			return new Text(theme.fg("toolTitle", theme.bold("Children")), 0, 0);
+			return new Text(theme.fg("toolTitle", theme.bold("children")), 0, 0);
 		},
 		renderResult(result, _options, theme) {
 			const details = result.details as { runs?: Array<{
@@ -187,7 +193,7 @@ export function registerParentTools(pi: ExtensionAPI, manager: ParentRunManager)
 				elapsedSeconds: number;
 			}> } | undefined;
 			const runs = details?.runs ?? [];
-			if (runs.length === 0) return new Text(theme.fg("muted", "No open Child sessions"), 0, 0);
+			if (runs.length === 0) return new Text(theme.fg("muted", "no open child sessions"), 0, 0);
 			const lines = runs.map((run) => {
 				const metadata = [
 					run.runId.slice(0, 8),
@@ -196,7 +202,7 @@ export function registerParentTools(pi: ExtensionAPI, manager: ParentRunManager)
 					run.adapter,
 					formatElapsed(run.elapsedSeconds),
 				].filter(Boolean).join(" · ");
-				return `${theme.fg("accent", "●")} ${theme.fg("accent", run.title)}\n  ${theme.fg("muted", metadata)}`;
+				return `${theme.fg("accent", "•")} ${theme.fg("accent", run.title)}\n  ${theme.fg("muted", metadata)}`;
 			});
 			return new Text(lines.join("\n\n"), 0, 0);
 		},
