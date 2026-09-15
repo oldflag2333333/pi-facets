@@ -5,6 +5,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { AdapterRegistry } from "./adapters/index.js";
 import {
 	createChannel,
+	MESSAGE_TYPE,
 	listTalkToParent,
 	readChildClosed,
 	readManifest,
@@ -198,7 +199,7 @@ export class ParentRunManager {
 
 	private notify(run: RunSnapshot, message: string): void {
 		this.pi.sendMessage({
-			customType: NOTICE_TYPE,
+			customType: MESSAGE_TYPE,
 			content: `[Facets child message]\nChild '${run.title}' (${run.runId}) says:\n${message}\n\nUse talk with runId '${run.runId}' to respond, or close_child when the delivery is accepted and no more work is needed.`,
 			display: true,
 			details: { title: run.title, message },

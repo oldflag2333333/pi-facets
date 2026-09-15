@@ -15,11 +15,15 @@ test("renders configured tools and skills under a subagent launch", () => {
 	registerParentTools(pi, { runs: new Map() } as never);
 	assert.deepEqual(tools.map((tool) => tool.name), ["create_child", "talk", "close_child", "list_child"]);
 	const delegate = tools.find((tool) => tool.name === "create_child");
-	assert.ok(delegate?.renderResult);
+	assert.ok(delegate?.renderCall);
+	assert.ok(delegate.renderResult);
 	const theme = {
 		fg: (_color: string, text: string) => text,
 		bold: (text: string) => text,
 	};
+	const call = delegate.renderCall({ title: "Research topic", profile: "research" }, theme, { expanded: false })
+		.render(240).join("\n");
+	assert.match(call, /^delegate · Research topic/);
 	const component = delegate.renderResult({
 		details: {
 			title: "Research topic",
@@ -52,7 +56,7 @@ test("renders talk message content", () => {
 	const message = Array.from({ length: 12 }, (_, index) => `审查结论 ${index + 1}`).join("\n");
 	const args = { runId: "c3b22f28-abcd", message };
 	const call = talk.renderCall(args, theme, { expanded: false }).render(120).map((line) => line.trimEnd()).join("\n");
-	assert.match(call, /^› message to child · Review MR\n\n审查结论 1/);
+	assert.match(call, /^› message send · Review MR\n\n审查结论 1/);
 	assert.match(call, /审查结论 3/);
 	assert.doesNotMatch(call, /审查结论 4/);
 	assert.match(call, /\.\.\. \(9 more lines, 12 total, ctrl\+o to expand\)/);

@@ -13,6 +13,11 @@ function normalizeTitle(value: string): string {
 	return value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 48) || "delegated task";
 }
 
+function findChildTitle(manager: ParentRunManager, runId: unknown): string | undefined {
+	if (typeof runId !== "string" || !runId) return;
+	return (manager.runs.get(runId) ?? [...manager.runs.values()].find((run) => run.runId.startsWith(runId)))?.title;
+}
+
 function formatElapsed(seconds: number): string {
 	if (seconds < 60) return `${seconds}s`;
 	if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
@@ -88,8 +93,8 @@ export function registerParentTools(pi: ExtensionAPI, manager: ParentRunManager)
 			};
 		},
 		renderCall(args, theme) {
-			const profile = typeof args.profile === "string" ? ` ${theme.fg("muted", `· ${args.profile}`)}` : "";
-			return new Text(`${theme.fg("toolTitle", theme.bold("create child"))} ${theme.fg("accent", normalizeTitle(args.title ?? "delegated task"))}${profile}`, 0, 0);
+			const title = normalizeTitle(args.title ?? "delegated task");
+			return new Text(`${theme.fg("toolTitle", theme.bold("delegate"))} ${theme.fg("muted", `· ${title}`)}`, 0, 0);
 		},
 		renderResult(result, { isPartial }, theme) {
 			const details = result.details as {
@@ -110,7 +115,7 @@ export function registerParentTools(pi: ExtensionAPI, manager: ParentRunManager)
 
 	pi.registerTool({
 		name: "talk",
-		label: "Talk",
+		label: "talk",
 		description: "Send one message to an existing Child Pi. The Child receives queued messages in order when it is idle. Format non-trivial messages as readable Markdown with paragraph breaks and lists.",
 		promptSnippet: "Send a message to an existing Child Pi",
 		executionMode: "sequential",
@@ -120,13 +125,10 @@ export function registerParentTools(pi: ExtensionAPI, manager: ParentRunManager)
 		}),
 		renderCall(args, theme, context) {
 			const message = typeof args.message === "string" ? args.message : "";
-			const requestedRunId = typeof args.runId === "string" ? args.runId : "";
-			const run = requestedRunId
-				? manager.runs.get(requestedRunId) ?? [...manager.runs.values()].find((candidate) => candidate.runId.startsWith(requestedRunId))
-				: undefined;
-			const title = run ? ` ${theme.fg("muted", `· ${run.title}`)}` : "";
+			const title = findChildTitle(manager, args.runId);
+			const suffix = title ? ` ${theme.fg("muted", `· ${title}`)}` : "";
 			const view = talkView(message, context.expanded);
-			let text = `${theme.fg("accent", "›")} ${theme.fg("toolTitle", theme.bold("message to child"))}${title}`;
+			let text = `${theme.fg("accent", "›")} ${theme.fg("toolTitle", theme.bold("message send"))}${suffix}`;
 			if (message) text += `\n\n${view.lines.map((line) => theme.fg("toolOutput", line)).join("\n")}`;
 			if (view.remaining > 0) {
 				text += theme.fg("muted", `\n... (${view.remaining} more lines, ${view.totalLines} total, ctrl+o to expand)`);
@@ -154,9 +156,18 @@ export function registerParentTools(pi: ExtensionAPI, manager: ParentRunManager)
 			runId: Type.String({ description: "Full Child run ID or a unique prefix." }),
 			reason: Type.Optional(Type.String({ description: "Reason for closing the Child session." })),
 		}),
+		renderCall(args, theme, context) {
+			const state = context.state as { title?: string };
+			state.title ??= findChildTitle(manager, args.runId);
+			return new Text(`${theme.fg("toolTitle", theme.bold("close"))} ${theme.fg("muted", `· ${state.title ?? "child"}`)}`, 0, 0);
+		},
 		async execute(_id, params) {
 			const run = await manager.close(params.runId, params.reason ?? "The Parent closed the Child session.");
 			return { content: [{ type: "text", text: `Closed Child: ${run.title}` }], details: { runId: run.runId } };
+		},
+		renderResult(_result, _options, theme, context) {
+			if (context.isError) return new Text(theme.fg("error", "\nclose failed"), 0, 0);
+			return new Container();
 		},
 	});
 

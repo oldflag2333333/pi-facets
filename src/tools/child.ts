@@ -1,8 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Container, Text } from "@earendil-works/pi-tui";
+import { Box, Container, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
 	listTalkToChild,
+	MESSAGE_TYPE,
 	readClose,
 	readManifest,
 	removeTalk,
@@ -52,7 +53,12 @@ export function registerChild(pi: ExtensionAPI): void {
 			if (!message) return;
 			delivering = true;
 			try {
-				pi.sendUserMessage(message.message);
+				pi.sendMessage({
+					customType: MESSAGE_TYPE,
+					content: `[Facets parent message]\nParent says:\n${message.message}`,
+					display: true,
+					details: { title: loaded.manifest.title, message: message.message },
+				}, { deliverAs: "followUp", triggerTurn: true });
 				removeTalk(loaded.channelDir, "to-child", message.id);
 			} catch (error) {
 				removeTalk(loaded.channelDir, "to-child", message.id);
@@ -72,6 +78,21 @@ export function registerChild(pi: ExtensionAPI): void {
 		return { systemPrompt: buildChildSystemPrompt(event.systemPrompt, loaded.manifest.profile) };
 	});
 
+	pi.registerMessageRenderer(MESSAGE_TYPE, (message, options, theme) => {
+		const details = message.details as { title?: string; message?: string } | undefined;
+		const title = details?.title ?? loaded.manifest.title;
+		const parentMessage = details?.message ?? "";
+		const view = talkView(parentMessage, options.expanded);
+		let text = `${theme.fg("accent", "›")} ${theme.fg("toolTitle", theme.bold("message inbox"))} ${theme.fg("muted", `· ${title}`)}`;
+		if (parentMessage) text += `\n\n${view.lines.map((line) => theme.fg("toolOutput", line)).join("\n")}`;
+		if (view.remaining > 0) {
+			text += theme.fg("muted", `\n... (${view.remaining} more lines, ${view.totalLines} total, ctrl+o to expand)`);
+		}
+		const box = new Box(1, 1, (line) => theme.bg("toolSuccessBg", line));
+		box.addChild(new Text(text, 0, 0));
+		return box;
+	});
+
 	pi.registerTool({
 		name: "talk",
 		label: "talk",
@@ -85,7 +106,7 @@ export function registerChild(pi: ExtensionAPI): void {
 		renderCall(args, theme, context) {
 			const message = typeof args.message === "string" ? args.message : "";
 			const view = talkView(message, context.expanded);
-			let text = `${theme.fg("accent", "›")} ${theme.fg("toolTitle", theme.bold("message to parent"))} ${theme.fg("muted", `· ${loaded.manifest.title}`)}`;
+			let text = `${theme.fg("accent", "›")} ${theme.fg("toolTitle", theme.bold("message send"))} ${theme.fg("muted", `· ${loaded.manifest.title}`)}`;
 			if (message) text += `\n\n${view.lines.map((line) => theme.fg("toolOutput", line)).join("\n")}`;
 			if (view.remaining > 0) {
 				text += theme.fg("muted", `\n... (${view.remaining} more lines, ${view.totalLines} total, ctrl+o to expand)`);

@@ -13,6 +13,8 @@ const MAX_MANIFEST_BYTES = 1024 * 1024;
 const MAX_TALK_BYTES = 1024 * 1024;
 const MAX_CONTROL_BYTES = 64 * 1024;
 
+export const MESSAGE_TYPE = "facets-message";
+
 type TalkDirection = "to-parent" | "to-child";
 
 function safeSegment(value: string): string {
