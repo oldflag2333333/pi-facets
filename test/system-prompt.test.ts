@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-	buildChildSystemPrompt,
+	buildSubSystemPrompt,
 	buildStartupSystemPrompt,
-	CHILD_PROTOCOL,
+	SUB_PROTOCOL,
 } from "../src/profiles/system-prompt.js";
 import type { ResolvedProfile } from "../src/profiles/types.js";
 
@@ -21,19 +21,19 @@ function profile(overrides: Partial<ResolvedProfile> = {}): ResolvedProfile {
 	};
 }
 
-test("uses handwritten SYSTEM.md verbatim before the mandatory Child protocol", () => {
-	const result = buildChildSystemPrompt("Pi generated prompt", profile({
+test("uses handwritten SYSTEM.md verbatim before the mandatory Sub protocol", () => {
+	const result = buildSubSystemPrompt("Pi generated prompt", profile({
 		systemPrompt: "Handwritten system prompt.\n",
 	}));
-	assert.equal(result, `Handwritten system prompt.\n\n${CHILD_PROTOCOL}`);
+	assert.equal(result, `Handwritten system prompt.\n\n${SUB_PROTOCOL}`);
 	assert.doesNotMatch(result, /Pi generated prompt|Follow the profile instructions/);
 });
 
-test("keeps the existing Child prompt composition without SYSTEM.md", () => {
-	const result = buildChildSystemPrompt("Pi generated prompt", profile());
+test("keeps the existing Sub prompt composition without SYSTEM.md", () => {
+	const result = buildSubSystemPrompt("Pi generated prompt", profile());
 	assert.equal(
 		result,
-		`Pi generated prompt\n\n${CHILD_PROTOCOL}\n\n## Facets profile: reviewer\nFollow the profile instructions.`,
+		`Pi generated prompt\n\n${SUB_PROTOCOL}\n\n## Facets profile: reviewer\nFollow the profile instructions.`,
 	);
 });
 

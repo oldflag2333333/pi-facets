@@ -5,16 +5,18 @@ import * as path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import {
 	createChannel,
-	listTalkToChild,
-	listTalkToParent,
-	readChildClosed,
+	listTalkToSub,
+	listTalkToMain,
+	readSubClosed,
+	readSubSessionInfo,
 	readClose,
 	readManifest,
 	removeChannel,
 	removeTalk,
-	talkToChild,
-	talkToParent,
-	writeChildClosed,
+	talkToSub,
+	talkToMain,
+	writeSubClosed,
+	writeSubSessionInfo,
 	writeClose,
 } from "../src/channel.js";
 
@@ -49,7 +51,7 @@ afterEach(() => {
 function channel() {
 	return createChannel({
 		runId: "run-1",
-		parentSessionId: "session-1",
+		mainSessionId: "session-1",
 		title: "Review auth",
 		task: "Review the auth flow.",
 		cwd: "/tmp/project",
@@ -64,15 +66,15 @@ test("creates an isolated manifest and round-trips talk in both directions", () 
 	assert.equal(manifest.token.length, 64);
 	assert.equal(manifest.profile.systemPrompt, "Handwritten system prompt.");
 
-	const parentMessage = talkToParent(created.channelDir, manifest, "Delivery from Child");
-	const childMessage = talkToChild(created.channelDir, manifest, "Feedback from Parent");
-	assert.deepEqual(listTalkToParent(created.channelDir, manifest), [parentMessage]);
-	assert.deepEqual(listTalkToChild(created.channelDir, manifest), [childMessage]);
+	const mainMessage = talkToMain(created.channelDir, manifest, "Delivery from Sub");
+	const subMessage = talkToSub(created.channelDir, manifest, "Feedback from Main");
+	assert.deepEqual(listTalkToMain(created.channelDir, manifest), [mainMessage]);
+	assert.deepEqual(listTalkToSub(created.channelDir, manifest), [subMessage]);
 
-	removeTalk(created.channelDir, "to-parent", parentMessage.id);
-	removeTalk(created.channelDir, "to-child", childMessage.id);
-	assert.deepEqual(listTalkToParent(created.channelDir, manifest), []);
-	assert.deepEqual(listTalkToChild(created.channelDir, manifest), []);
+	removeTalk(created.channelDir, "to-main", mainMessage.id);
+	removeTalk(created.channelDir, "to-sub", subMessage.id);
+	assert.deepEqual(listTalkToMain(created.channelDir, manifest), []);
+	assert.deepEqual(listTalkToSub(created.channelDir, manifest), []);
 	removeChannel(created.channelDir);
 });
 
@@ -87,15 +89,25 @@ test("rejects talk messages with a different capability token", () => {
 		createdAt: Date.now(),
 		message: "Leak context",
 	};
-	fs.writeFileSync(path.join(created.channelDir, "to-parent", "forged.json"), JSON.stringify(forged));
-	assert.deepEqual(listTalkToParent(created.channelDir, manifest), []);
+	fs.writeFileSync(path.join(created.channelDir, "to-main", "forged.json"), JSON.stringify(forged));
+	assert.deepEqual(listTalkToMain(created.channelDir, manifest), []);
 });
 
-test("round-trips Parent close and manual Child closure", () => {
+test("round-trips persistent Sub session identity", () => {
+	const created = channel();
+	const manifest = readManifest(created.channelDir);
+	const info = writeSubSessionInfo(created.channelDir, manifest, {
+		sessionId: "sub-session-id",
+		sessionFile: "/tmp/sub.jsonl",
+	});
+	assert.deepEqual(readSubSessionInfo(created.channelDir, manifest), info);
+});
+
+test("round-trips Main close and manual Sub closure", () => {
 	const created = channel();
 	const manifest = readManifest(created.channelDir);
 	writeClose(created.channelDir, manifest, "Accepted");
 	assert.equal(readClose(created.channelDir, manifest)?.reason, "Accepted");
-	writeChildClosed(created.channelDir, manifest, "Closed manually");
-	assert.equal(readChildClosed(created.channelDir, manifest)?.reason, "Closed manually");
+	writeSubClosed(created.channelDir, manifest, "Closed manually");
+	assert.equal(readSubClosed(created.channelDir, manifest)?.reason, "Closed manually");
 });

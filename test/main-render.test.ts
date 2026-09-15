@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { registerParentTools } from "../src/tools/parent.js";
+import { registerMainTools } from "../src/tools/main.js";
 
 interface CapturedTool {
 	name: string;
@@ -9,12 +9,12 @@ interface CapturedTool {
 	renderResult?: (result: unknown, options: { isPartial: boolean }, theme: unknown, context?: { isError: boolean }) => { render(width: number): string[] };
 }
 
-test("renders configured tools and skills under a subagent launch", () => {
+test("renders configured tools and skills under a Sub launch", () => {
 	const tools: CapturedTool[] = [];
 	const pi = { registerTool: (tool: CapturedTool) => tools.push(tool) } as unknown as ExtensionAPI;
-	registerParentTools(pi, { runs: new Map() } as never);
-	assert.deepEqual(tools.map((tool) => tool.name), ["create_child", "talk", "close_child", "list_child"]);
-	const delegate = tools.find((tool) => tool.name === "create_child");
+	registerMainTools(pi, { runs: new Map() } as never);
+	assert.deepEqual(tools.map((tool) => tool.name), ["delegate", "talk", "close_sub", "list_sub"]);
+	const delegate = tools.find((tool) => tool.name === "delegate");
 	assert.ok(delegate?.renderCall);
 	assert.ok(delegate.renderResult);
 	const theme = {
@@ -24,6 +24,9 @@ test("renders configured tools and skills under a subagent launch", () => {
 	const call = delegate.renderCall({ title: "Research topic", profile: "research" }, theme, { expanded: false })
 		.render(240).join("\n");
 	assert.match(call, /^delegate · Research topic/);
+	const resumeCall = delegate.renderCall({ title: "Research topic", resumeSessionId: "session-id" }, theme, { expanded: false })
+		.render(240).join("\n");
+	assert.match(resumeCall, /^resume · Research topic/);
 	const component = delegate.renderResult({
 		details: {
 			title: "Research topic",
@@ -45,7 +48,7 @@ test("renders talk message content", () => {
 	const tools: CapturedTool[] = [];
 	const pi = { registerTool: (tool: CapturedTool) => tools.push(tool) } as unknown as ExtensionAPI;
 	const runs = new Map([["c3b22f28-abcd", { runId: "c3b22f28-abcd", title: "Review MR" }]]);
-	registerParentTools(pi, { runs, titleFor: () => "Review MR" } as never);
+	registerMainTools(pi, { runs, titleFor: () => "Review MR" } as never);
 	const talk = tools.find((tool) => tool.name === "talk");
 	assert.ok(talk?.renderCall);
 	assert.ok(talk.renderResult);
@@ -65,38 +68,47 @@ test("renders talk message content", () => {
 	const result = talk.renderResult({ details: {} }, { isPartial: false }, theme, { isError: false })
 		.render(120).join("\n");
 	assert.equal(result.trim(), "");
-	const close = tools.find((tool) => tool.name === "close_child");
+	const close = tools.find((tool) => tool.name === "close_sub");
 	assert.ok(close?.renderCall);
 	const closeCall = close.renderCall({ runId: "c3b22f28" }, theme, { expanded: false, state: {} })
 		.render(120).join("\n").trimEnd();
 	assert.equal(closeCall, "close · Review MR");
 });
 
-test("renders open Child sessions as compact cards with readable durations", () => {
+test("renders open and resumable Sub sessions under subs", () => {
 	const tools: CapturedTool[] = [];
 	const pi = { registerTool: (tool: CapturedTool) => tools.push(tool) } as unknown as ExtensionAPI;
-	registerParentTools(pi, { runs: new Map() } as never);
-	const list = tools.find((tool) => tool.name === "list_child");
+	registerMainTools(pi, { runs: new Map() } as never);
+	const list = tools.find((tool) => tool.name === "list_sub");
 	assert.ok(list?.renderCall);
 	assert.ok(list.renderResult);
 	const theme = {
 		fg: (_color: string, text: string) => text,
 		bold: (text: string) => text,
 	};
-	assert.equal(list.renderCall({}, theme, { expanded: false }).render(120).join("\n").trimEnd(), "children");
+	assert.equal(list.renderCall({}, theme, { expanded: false }).render(120).join("\n").trimEnd(), "subs");
 	const rendered = list.renderResult({
 		details: {
-			runs: [{
+			open: [{
 				runId: "c3b22f28-abcd",
+				subSessionId: "session-open",
 				title: "发布舆情 web 与 job",
 				profile: "misc",
-				sessionPersistence: "ephemeral",
+				sessionPersistence: "persistent",
 				adapter: "herdr",
 				elapsedSeconds: 2788,
+			}],
+			resumable: [{
+				sessionId: "session-closed",
+				title: "历史审查",
+				cwd: "/tmp/project",
+				modifiedSecondsAgo: 7200,
 			}],
 		},
 	}, { isPartial: false }, theme).render(120).join("\n");
 	assert.match(rendered, /• 发布舆情 web 与 job/);
-	assert.match(rendered, /c3b22f28 · misc · ephemeral · herdr · 46m/);
+	assert.match(rendered, /c3b22f28 · session- · misc · persistent · herdr · 46m/);
+	assert.match(rendered, /○ 历史审查/);
+	assert.match(rendered, /session- · persistent · project · 2h/);
 	assert.doesNotMatch(rendered, /\[failed\]|<misc>|2788s/);
 });

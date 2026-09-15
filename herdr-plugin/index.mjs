@@ -16,9 +16,9 @@ function statePath() {
 function readState() {
 	try {
 		const value = JSON.parse(fs.readFileSync(statePath(), "utf8"));
-		return { showSubagents: value?.showSubagents === true };
+		return { showSubs: value?.showSubs === true };
 	} catch (error) {
-		if (error?.code === "ENOENT") return { showSubagents: false };
+		if (error?.code === "ENOENT") return { showSubs: false };
 		throw error;
 	}
 }
@@ -64,20 +64,20 @@ function send(method, params) {
 	});
 }
 
-async function apply(showSubagents) {
-	if (showSubagents) {
+async function apply(showSubs) {
+	if (showSubs) {
 		await send("agent.view.clear", { source });
 		return;
 	}
 	await send("agent.view.set", {
 		source,
-		label: "subagents hidden",
+		label: "subs hidden",
 		filter: {
 			op: "not",
 			filter: {
 				op: "eq",
 				field: { token: "facets_role" },
-				value: "subagent",
+				value: "sub",
 			},
 		},
 		sort: [],
@@ -87,17 +87,17 @@ async function apply(showSubagents) {
 export async function run(action = "startup") {
 	const current = readState();
 	const next = action === "toggle"
-		? { showSubagents: !current.showSubagents }
+		? { showSubs: !current.showSubs }
 		: action === "show"
-			? { showSubagents: true }
+			? { showSubs: true }
 			: action === "hide" || action === "startup"
 				? current
 				: undefined;
 	if (!next) throw new Error(`Unknown action '${action}'.`);
-	if (action === "hide") next.showSubagents = false;
+	if (action === "hide") next.showSubs = false;
 	writeState(next);
-	await apply(next.showSubagents);
-	console.log(next.showSubagents ? "Facets subagents are visible." : "Facets subagents are hidden.");
+	await apply(next.showSubs);
+	console.log(next.showSubs ? "Facets subs are visible." : "Facets subs are hidden.");
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

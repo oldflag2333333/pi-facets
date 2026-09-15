@@ -19,7 +19,7 @@ export function resolveToolExtensions(profile: ResolvedProfile, tools: ToolSourc
 		if (tool.sourceInfo.source === "builtin") continue;
 		const sourcePath = tool.sourceInfo.path;
 		if (tool.sourceInfo.source === "sdk" || !sourcePath || sourcePath.startsWith("<")) {
-			throw new Error(`Profile '${profile.name}' tool '${name}' cannot be loaded in an isolated child process.`);
+			throw new Error(`Profile '${profile.name}' tool '${name}' cannot be loaded in an isolated Sub process.`);
 		}
 		let stat: fs.Stats;
 		try {

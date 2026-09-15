@@ -2,10 +2,10 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-const PARENT_CONTEXT_FILE = "PARENT.md";
-const MAX_PARENT_CONTEXT_BYTES = 256 * 1024;
+const MAIN_CONTEXT_FILE = "MAIN.md";
+const MAX_MAIN_CONTEXT_BYTES = 256 * 1024;
 
-export interface ParentContextLoadResult {
+export interface MainContextLoadResult {
 	content: string;
 	paths: string[];
 	diagnostics: Array<{ path: string; message: string }>;
@@ -22,19 +22,19 @@ function ancestorDirectories(cwd: string): string[] {
 	}
 }
 
-export function globalParentContextPath(): string {
-	return path.join(getAgentDir(), "facets", PARENT_CONTEXT_FILE);
+export function globalMainContextPath(): string {
+	return path.join(getAgentDir(), "facets", MAIN_CONTEXT_FILE);
 }
 
-export function projectParentContextPath(directory: string): string {
-	return path.join(directory, CONFIG_DIR_NAME, "facets", PARENT_CONTEXT_FILE);
+export function projectMainContextPath(directory: string): string {
+	return path.join(directory, CONFIG_DIR_NAME, "facets", MAIN_CONTEXT_FILE);
 }
 
-export function loadParentContext(cwd: string, includeProject: boolean): ParentContextLoadResult {
+export function loadMainContext(cwd: string, includeProject: boolean): MainContextLoadResult {
 	const candidates = [
-		globalParentContextPath(),
+		globalMainContextPath(),
 		...(includeProject
-			? ancestorDirectories(cwd).reverse().map((directory) => projectParentContextPath(directory))
+			? ancestorDirectories(cwd).reverse().map((directory) => projectMainContextPath(directory))
 			: []),
 	];
 	const sections: Array<{ path: string; content: string }> = [];
@@ -47,9 +47,9 @@ export function loadParentContext(cwd: string, includeProject: boolean): ParentC
 		seen.add(sourcePath);
 		try {
 			const stat = fs.statSync(sourcePath);
-			if (!stat.isFile()) throw new Error("PARENT.md must be a regular file");
-			if (stat.size > MAX_PARENT_CONTEXT_BYTES) {
-				throw new Error(`PARENT.md exceeds ${MAX_PARENT_CONTEXT_BYTES} bytes`);
+			if (!stat.isFile()) throw new Error("MAIN.md must be a regular file");
+			if (stat.size > MAX_MAIN_CONTEXT_BYTES) {
+				throw new Error(`MAIN.md exceeds ${MAX_MAIN_CONTEXT_BYTES} bytes`);
 			}
 			const content = fs.readFileSync(sourcePath, "utf8").trim();
 			if (content) sections.push({ path: sourcePath, content });
@@ -61,14 +61,14 @@ export function loadParentContext(cwd: string, includeProject: boolean): ParentC
 
 	return {
 		content: sections
-			.map((section) => `## Facets Parent context: ${section.path}\n\n${section.content}`)
+			.map((section) => `## Facets Main context: ${section.path}\n\n${section.content}`)
 			.join("\n\n"),
 		paths: sections.map((section) => section.path),
 		diagnostics,
 	};
 }
 
-export class ParentContextRuntime {
+export class MainContextRuntime {
 	private content = "";
 
 	constructor(
@@ -78,10 +78,10 @@ export class ParentContextRuntime {
 
 	register(): void {
 		this.pi.on("session_start", (_event, ctx) => {
-			const loaded = loadParentContext(ctx.cwd, ctx.isProjectTrusted());
+			const loaded = loadMainContext(ctx.cwd, ctx.isProjectTrusted());
 			this.content = loaded.content;
 			for (const diagnostic of loaded.diagnostics) {
-				const message = `Facets Parent context error (${diagnostic.path}): ${diagnostic.message}`;
+				const message = `Facets Main context error (${diagnostic.path}): ${diagnostic.message}`;
 				ctx.ui.notify(message, "warning");
 				if (!ctx.hasUI) console.error(message);
 			}

@@ -1,7 +1,7 @@
 {
   "name": "pi-facets",
   "version": "0.2.0",
-  "description": "Reusable Pi capability profiles plus context-isolated delegation and pluggable child surfaces",
+  "description": "Reusable Pi capability profiles plus context-isolated delegation and pluggable Sub surfaces",
   "type": "module",
   "license": "MIT",
   "author": {
@@ -21,7 +21,7 @@
     "pi-package",
     "pi-extension",
     "profiles",
-    "subagent",
+    "sub",
     "herdr"
   ],
   "files": [

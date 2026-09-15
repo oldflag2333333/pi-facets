@@ -3,7 +3,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type {
-	ChildClosedMessage,
+	SubClosedMessage,
+	SubSessionInfo,
 	CloseMessage,
 	DelegateManifest,
 	TalkMessage,
@@ -15,7 +16,7 @@ const MAX_CONTROL_BYTES = 64 * 1024;
 
 export const MESSAGE_TYPE = "facets-message";
 
-type TalkDirection = "to-parent" | "to-child";
+type TalkDirection = "to-main" | "to-sub";
 
 function safeSegment(value: string): string {
 	return value.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 96) || "unknown";
@@ -27,8 +28,8 @@ export function runtimeRoot(): string {
 	return path.join(base, `pi-facets-${owner}`);
 }
 
-export function channelPath(parentSessionId: string, runId: string): string {
-	return path.join(runtimeRoot(), safeSegment(parentSessionId), safeSegment(runId));
+export function channelPath(mainSessionId: string, runId: string): string {
+	return path.join(runtimeRoot(), safeSegment(mainSessionId), safeSegment(runId));
 }
 
 function assertSize(value: unknown, maxBytes: number, label: string): void {
@@ -59,9 +60,9 @@ function record(value: unknown): Record<string, unknown> | undefined {
 
 export function createChannel(input: Omit<DelegateManifest, "version" | "token" | "createdAt">): DelegateManifest & { channelDir: string } {
 	const token = randomBytes(32).toString("hex");
-	const channelDir = channelPath(input.parentSessionId, input.runId);
-	fs.mkdirSync(path.join(channelDir, "to-parent"), { recursive: true, mode: 0o700 });
-	fs.mkdirSync(path.join(channelDir, "to-child"), { recursive: true, mode: 0o700 });
+	const channelDir = channelPath(input.mainSessionId, input.runId);
+	fs.mkdirSync(path.join(channelDir, "to-main"), { recursive: true, mode: 0o700 });
+	fs.mkdirSync(path.join(channelDir, "to-sub"), { recursive: true, mode: 0o700 });
 	const manifest: DelegateManifest = { version: 1, ...input, token, createdAt: Date.now() };
 	writeAtomicJson(path.join(channelDir, "manifest.json"), manifest, MAX_MANIFEST_BYTES);
 	return { ...manifest, channelDir };
@@ -85,7 +86,7 @@ function validProfile(value: unknown): boolean {
 
 export function readManifest(channelDir: string): DelegateManifest {
 	const value = record(readJson(path.join(channelDir, "manifest.json")));
-	if (!value || value.version !== 1 || typeof value.runId !== "string" || typeof value.parentSessionId !== "string"
+	if (!value || value.version !== 1 || typeof value.runId !== "string" || typeof value.mainSessionId !== "string"
 		|| typeof value.title !== "string" || typeof value.task !== "string" || typeof value.cwd !== "string"
 		|| !validProfile(value.profile) || typeof value.token !== "string" || typeof value.createdAt !== "number") {
 		throw new Error("Invalid Facets channel manifest.");
@@ -106,12 +107,12 @@ function writeTalk(channelDir: string, manifest: DelegateManifest, direction: Ta
 	return talk;
 }
 
-export function talkToParent(channelDir: string, manifest: DelegateManifest, message: string): TalkMessage {
-	return writeTalk(channelDir, manifest, "to-parent", message);
+export function talkToMain(channelDir: string, manifest: DelegateManifest, message: string): TalkMessage {
+	return writeTalk(channelDir, manifest, "to-main", message);
 }
 
-export function talkToChild(channelDir: string, manifest: DelegateManifest, message: string): TalkMessage {
-	return writeTalk(channelDir, manifest, "to-child", message);
+export function talkToSub(channelDir: string, manifest: DelegateManifest, message: string): TalkMessage {
+	return writeTalk(channelDir, manifest, "to-sub", message);
 }
 
 function validTalk(value: unknown, manifest: DelegateManifest): value is TalkMessage {
@@ -136,16 +137,39 @@ function listTalk(channelDir: string, manifest: DelegateManifest, direction: Tal
 	return messages.sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
 }
 
-export function listTalkToParent(channelDir: string, manifest: DelegateManifest): TalkMessage[] {
-	return listTalk(channelDir, manifest, "to-parent");
+export function listTalkToMain(channelDir: string, manifest: DelegateManifest): TalkMessage[] {
+	return listTalk(channelDir, manifest, "to-main");
 }
 
-export function listTalkToChild(channelDir: string, manifest: DelegateManifest): TalkMessage[] {
-	return listTalk(channelDir, manifest, "to-child");
+export function listTalkToSub(channelDir: string, manifest: DelegateManifest): TalkMessage[] {
+	return listTalk(channelDir, manifest, "to-sub");
 }
 
 export function removeTalk(channelDir: string, direction: TalkDirection, id: string): void {
 	try { fs.rmSync(path.join(channelDir, direction, `${safeSegment(id)}.json`), { force: true }); } catch {}
+}
+
+export function writeSubSessionInfo(channelDir: string, manifest: DelegateManifest, input: {
+	sessionId: string;
+	sessionFile: string;
+}): SubSessionInfo {
+	const info: SubSessionInfo = {
+		version: 1,
+		runId: manifest.runId,
+		token: manifest.token,
+		sessionId: input.sessionId,
+		sessionFile: input.sessionFile,
+		createdAt: Date.now(),
+	};
+	writeAtomicJson(path.join(channelDir, "session.json"), info);
+	return info;
+}
+
+export function readSubSessionInfo(channelDir: string, manifest: DelegateManifest): SubSessionInfo | undefined {
+	const value = record(readJson(path.join(channelDir, "session.json")));
+	if (!value || value.version !== 1 || value.runId !== manifest.runId || value.token !== manifest.token
+		|| typeof value.sessionId !== "string" || typeof value.sessionFile !== "string" || typeof value.createdAt !== "number") return undefined;
+	return value as unknown as SubSessionInfo;
 }
 
 export function writeClose(channelDir: string, manifest: DelegateManifest, reason: string): void {
@@ -166,8 +190,8 @@ export function readClose(channelDir: string, manifest: DelegateManifest): Close
 	return value as unknown as CloseMessage;
 }
 
-export function writeChildClosed(channelDir: string, manifest: DelegateManifest, reason: string): void {
-	const message: ChildClosedMessage = {
+export function writeSubClosed(channelDir: string, manifest: DelegateManifest, reason: string): void {
+	const message: SubClosedMessage = {
 		version: 1,
 		runId: manifest.runId,
 		token: manifest.token,
@@ -177,11 +201,11 @@ export function writeChildClosed(channelDir: string, manifest: DelegateManifest,
 	writeAtomicJson(path.join(channelDir, "closed.json"), message);
 }
 
-export function readChildClosed(channelDir: string, manifest: DelegateManifest): ChildClosedMessage | undefined {
+export function readSubClosed(channelDir: string, manifest: DelegateManifest): SubClosedMessage | undefined {
 	const value = record(readJson(path.join(channelDir, "closed.json")));
 	if (!value || value.version !== 1 || value.runId !== manifest.runId || value.token !== manifest.token
 		|| typeof value.createdAt !== "number" || typeof value.reason !== "string") return undefined;
-	return value as unknown as ChildClosedMessage;
+	return value as unknown as SubClosedMessage;
 }
 
 export function removeChannel(channelDir: string): void {

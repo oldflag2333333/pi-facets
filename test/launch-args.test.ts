@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { childCapabilityArgs } from "../src/profiles/launch-args.js";
+import { subCapabilityArgs } from "../src/profiles/launch-args.js";
 import type { ResolvedProfile } from "../src/profiles/types.js";
 
 const profile: ResolvedProfile = {
@@ -16,8 +16,8 @@ const profile: ResolvedProfile = {
 	resolvedExtensions: ["/tmp/web-extension.ts"],
 };
 
-test("builds one child capability argument set from the resolved profile", () => {
-	assert.deepEqual(childCapabilityArgs(profile, "/tmp/facets.ts"), [
+test("builds one Sub capability argument set from the resolved profile", () => {
+	assert.deepEqual(subCapabilityArgs(profile, "/tmp/facets.ts"), [
 		"-e", "/tmp/web-extension.ts",
 		"--tools", "read,talk",
 		"--model", "provider/model/name",

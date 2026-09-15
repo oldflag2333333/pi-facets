@@ -1,8 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { childCapabilityArgs } from "../profiles/launch-args.js";
-import type { ChildLaunchSpec, ChildSurfaceAdapter, SurfaceHandle } from "../types.js";
+import { subCapabilityArgs } from "../profiles/launch-args.js";
+import type { SubLaunchSpec, SubSurfaceAdapter, SurfaceHandle } from "../types.js";
 
 function parseEnvelope(stdout: string): Record<string, unknown> {
 	const lines = stdout.trim().split(/\r?\n/).filter(Boolean).reverse();
@@ -29,23 +29,24 @@ function safeLabel(value: string): string {
 }
 
 function agentName(runId: string): string {
-	return `child-${runId.toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 20)}`;
+	return `sub-${runId.toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 20)}`;
 }
 
-function childArgs(spec: ChildLaunchSpec): string[] {
+function subArgs(spec: SubLaunchSpec): string[] {
 	const herdrIntegration = path.join(getAgentDir(), "extensions", "herdr-agent-state.ts");
 	return [
 		"--no-extensions",
 		"-e", spec.entryPath,
 		...(fs.existsSync(herdrIntegration) ? ["-e", herdrIntegration] : []),
-		...(spec.profile.sessionPersistence === "persistent" ? [] : ["--no-session"]),
+		...(spec.profile.sessionPersistence === "persistent" || spec.resumeSessionId ? [] : ["--no-session"]),
+		...(spec.resumeSessionId ? ["--session", spec.resumeSessionId] : []),
 		spec.projectTrusted ? "--approve" : "--no-approve",
 		"--name", `[sub] ${safeLabel(spec.title)}`,
-		...childCapabilityArgs(spec.profile, spec.entryPath),
+		...subCapabilityArgs(spec.profile, spec.entryPath),
 	];
 }
 
-export class HerdrTabAdapter implements ChildSurfaceAdapter {
+export class HerdrTabAdapter implements SubSurfaceAdapter {
 	readonly id = "herdr" as const;
 	constructor(private readonly pi: ExtensionAPI) {}
 
@@ -55,7 +56,7 @@ export class HerdrTabAdapter implements ChildSurfaceAdapter {
 		return result.code === 0;
 	}
 
-	async launch(spec: ChildLaunchSpec, signal?: AbortSignal): Promise<SurfaceHandle> {
+	async launch(spec: SubLaunchSpec, signal?: AbortSignal): Promise<SurfaceHandle> {
 		const workspaceId = process.env.HERDR_WORKSPACE_ID;
 		if (!workspaceId) throw new Error("HERDR_WORKSPACE_ID is unavailable; Pi is not running in a Herdr workspace.");
 		const label = `↳ pi · ${safeLabel(spec.title)}`;
@@ -64,7 +65,7 @@ export class HerdrTabAdapter implements ChildSurfaceAdapter {
 			"--workspace", workspaceId,
 			"--cwd", spec.cwd,
 			"--label", label,
-			"--env", "PI_FACETS_ROLE=child",
+			"--env", "PI_FACETS_ROLE=sub",
 			"--env", `PI_FACETS_CHANNEL=${spec.channelDir}`,
 			"--env", `PI_FACETS_TOKEN=${spec.token}`,
 			"--no-focus",
@@ -82,24 +83,24 @@ export class HerdrTabAdapter implements ChildSurfaceAdapter {
 			"--pane", paneId,
 			"--timeout", "60000",
 			"--",
-			...childArgs(spec),
+			...subArgs(spec),
 		], { timeout: 70_000, signal });
 		if (started.code !== 0) {
 			await this.pi.exec("herdr", ["tab", "close", tabId], { timeout: 10_000 });
-			throw new Error(started.stderr || "Failed to start child Pi in Herdr tab.");
+			throw new Error(started.stderr || "Failed to start Sub Pi in Herdr tab.");
 		}
 
 		const metadata = await this.pi.exec("herdr", [
 			"pane", "report-metadata", paneId,
 			"--source", "facets",
-			"--token", "facets_role=subagent",
-			"--token", `facets_parent_session=${spec.parentSessionId}`,
+			"--token", "facets_role=sub",
+			"--token", `facets_main_session=${spec.mainSessionId}`,
 			"--token", `facets_run_id=${spec.runId}`,
 			"--token", `facets_profile=${spec.profile.name}`,
 		], { timeout: 10_000, signal });
 		if (metadata.code !== 0) {
 			await this.pi.exec("herdr", ["tab", "close", tabId], { timeout: 10_000 });
-			throw new Error(metadata.stderr || "Failed to mark the Herdr pane as a Facets subagent.");
+			throw new Error(metadata.stderr || "Failed to mark the Herdr pane as a Facets Sub.");
 		}
 
 		const prompted = await this.pi.exec("herdr", [

@@ -2,15 +2,16 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Box, Container, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
-	listTalkToChild,
+	listTalkToSub,
 	MESSAGE_TYPE,
 	readClose,
 	readManifest,
 	removeTalk,
-	talkToParent,
-	writeChildClosed,
+	talkToMain,
+	writeSubClosed,
+	writeSubSessionInfo,
 } from "../channel.js";
-import { buildChildSystemPrompt } from "../profiles/system-prompt.js";
+import { buildSubSystemPrompt } from "../profiles/system-prompt.js";
 import { talkView } from "../talk-render.js";
 import type { DelegateManifest } from "../types.js";
 
@@ -27,13 +28,13 @@ function contentText(content: unknown): string {
 }
 
 function loadManifest(): { channelDir: string; manifest: DelegateManifest } {
-	if (!channelDir) throw new Error("PI_FACETS_CHANNEL is missing in child Pi.");
+	if (!channelDir) throw new Error("PI_FACETS_CHANNEL is missing in Sub Pi.");
 	const manifest = readManifest(channelDir);
-	if (!envToken || envToken !== manifest.token) throw new Error("Child channel capability token does not match.");
+	if (!envToken || envToken !== manifest.token) throw new Error("Sub channel capability token does not match.");
 	return { channelDir, manifest };
 }
 
-export function registerChild(pi: ExtensionAPI): void {
+export function registerSub(pi: ExtensionAPI): void {
 	const loaded = loadManifest();
 	let delivering = false;
 	let protocolPoller: ReturnType<typeof setInterval> | undefined;
@@ -41,7 +42,14 @@ export function registerChild(pi: ExtensionAPI): void {
 	pi.on("session_start", (_event, ctx) => {
 		pi.setSessionName(`[sub] ${loaded.manifest.title}`);
 		ctx.ui.setTitle(`[sub] ${loaded.manifest.title}`);
-		ctx.ui.setStatus("facets", `child · ${loaded.manifest.profile.name}`);
+		ctx.ui.setStatus("facets", `sub · ${loaded.manifest.profile.name}`);
+		const sessionFile = ctx.sessionManager.getSessionFile();
+		if (loaded.manifest.profile.sessionPersistence === "persistent" && sessionFile) {
+			writeSubSessionInfo(loaded.channelDir, loaded.manifest, {
+				sessionId: ctx.sessionManager.getSessionId(),
+				sessionFile,
+			});
+		}
 		protocolPoller = setInterval(() => {
 			if (readClose(loaded.channelDir, loaded.manifest)) {
 				ctx.abort();
@@ -49,23 +57,23 @@ export function registerChild(pi: ExtensionAPI): void {
 				return;
 			}
 			if (delivering || !ctx.isIdle()) return;
-			const message = listTalkToChild(loaded.channelDir, loaded.manifest)[0];
+			const message = listTalkToSub(loaded.channelDir, loaded.manifest)[0];
 			if (!message) return;
 			delivering = true;
 			try {
 				pi.sendMessage({
 					customType: MESSAGE_TYPE,
-					content: `[Facets parent message]\nParent says:\n${message.message}`,
+					content: `[Facets Main message]\nMain says:\n${message.message}`,
 					display: true,
 					details: { title: loaded.manifest.title, message: message.message },
 				}, { deliverAs: "followUp", triggerTurn: true });
-				removeTalk(loaded.channelDir, "to-child", message.id);
+				removeTalk(loaded.channelDir, "to-sub", message.id);
 			} catch (error) {
-				removeTalk(loaded.channelDir, "to-child", message.id);
-				talkToParent(
+				removeTalk(loaded.channelDir, "to-sub", message.id);
+				talkToMain(
 					loaded.channelDir,
 					loaded.manifest,
-					`Unable to process the Parent message: ${error instanceof Error ? error.message : String(error)}`,
+					`Unable to process the Main message: ${error instanceof Error ? error.message : String(error)}`,
 				);
 			} finally {
 				delivering = false;
@@ -75,16 +83,16 @@ export function registerChild(pi: ExtensionAPI): void {
 	});
 
 	pi.on("before_agent_start", (event) => {
-		return { systemPrompt: buildChildSystemPrompt(event.systemPrompt, loaded.manifest.profile) };
+		return { systemPrompt: buildSubSystemPrompt(event.systemPrompt, loaded.manifest.profile) };
 	});
 
 	pi.registerMessageRenderer(MESSAGE_TYPE, (message, options, theme) => {
 		const details = message.details as { title?: string; message?: string } | undefined;
 		const title = details?.title ?? loaded.manifest.title;
-		const parentMessage = details?.message ?? "";
-		const view = talkView(parentMessage, options.expanded);
+		const mainMessage = details?.message ?? "";
+		const view = talkView(mainMessage, options.expanded);
 		let text = `${theme.fg("accent", "›")} ${theme.fg("toolTitle", theme.bold("message inbox"))} ${theme.fg("muted", `· ${title}`)}`;
-		if (parentMessage) text += `\n\n${view.lines.map((line) => theme.fg("toolOutput", line)).join("\n")}`;
+		if (mainMessage) text += `\n\n${view.lines.map((line) => theme.fg("toolOutput", line)).join("\n")}`;
 		if (view.remaining > 0) {
 			text += theme.fg("muted", `\n... (${view.remaining} more lines, ${view.totalLines} total, ctrl+o to expand)`);
 		}
@@ -96,9 +104,9 @@ export function registerChild(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "talk",
 		label: "talk",
-		description: "Send one message to the Parent Pi and end the current turn. Use it to ask for information or deliver work. Format non-trivial messages as readable Markdown with paragraph breaks and lists.",
-		promptSnippet: "Send a message to the Parent Pi",
-		promptGuidelines: ["Use talk whenever the child needs to communicate with the Parent; the Parent decides when to close the child session."],
+		description: "Send one message to the Main Pi and end the current turn. Use it to ask for information or deliver work. Format non-trivial messages as readable Markdown with paragraph breaks and lists.",
+		promptSnippet: "Send a message to the Main Pi",
+		promptGuidelines: ["Use talk whenever the Sub needs to communicate with the Main; the Main decides when to close the Sub session."],
 		executionMode: "sequential",
 		parameters: Type.Object({
 			message: Type.String({ description: "Message to the other Agent. For non-trivial content, use readable Markdown with paragraph breaks and lists." }),
@@ -114,9 +122,9 @@ export function registerChild(pi: ExtensionAPI): void {
 			return new Text(text, 0, 0);
 		},
 		async execute(_id, params) {
-			const message = talkToParent(loaded.channelDir, loaded.manifest, params.message);
+			const message = talkToMain(loaded.channelDir, loaded.manifest, params.message);
 			return {
-				content: [{ type: "text", text: "Message delivered to the Parent Pi." }],
+				content: [{ type: "text", text: "Message delivered to the Main Pi." }],
 				details: { messageId: message.id },
 				terminate: true,
 			};
@@ -131,7 +139,7 @@ export function registerChild(pi: ExtensionAPI): void {
 		if (protocolPoller) clearInterval(protocolPoller);
 		protocolPoller = undefined;
 		if (event.reason === "quit" && !readClose(loaded.channelDir, loaded.manifest)) {
-			writeChildClosed(loaded.channelDir, loaded.manifest, "The child session was closed manually.");
+			writeSubClosed(loaded.channelDir, loaded.manifest, "The Sub session was closed manually.");
 		}
 	});
 }

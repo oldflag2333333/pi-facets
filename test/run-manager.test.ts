@@ -4,8 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createChannel, listTalkToChild, listTalkToParent, readManifest, talkToParent } from "../src/channel.js";
-import { ParentRunManager } from "../src/run-manager.js";
+import { createChannel, listTalkToSub, listTalkToMain, readManifest, talkToMain, writeSubSessionInfo } from "../src/channel.js";
+import { MainRunManager } from "../src/run-manager.js";
 import type { RunSnapshot } from "../src/types.js";
 
 let root: string;
@@ -23,7 +23,7 @@ afterEach(() => {
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
-function openRun(manager: ParentRunManager): RunSnapshot {
+function openRun(manager: MainRunManager): RunSnapshot {
 	const profile = {
 		version: 1 as const,
 		name: "reviewer",
@@ -36,7 +36,7 @@ function openRun(manager: ParentRunManager): RunSnapshot {
 	};
 	const channel = createChannel({
 		runId: "open-run",
-		parentSessionId: "parent-session",
+		mainSessionId: "main-session",
 		title: "Review MR",
 		task: "Review it.",
 		cwd: "/tmp/project",
@@ -45,7 +45,7 @@ function openRun(manager: ParentRunManager): RunSnapshot {
 	const run: RunSnapshot = {
 		version: 1,
 		runId: channel.runId,
-		parentSessionId: channel.parentSessionId,
+		mainSessionId: channel.mainSessionId,
 		title: channel.title,
 		cwd: channel.cwd,
 		profileName: profile.name,
@@ -59,7 +59,7 @@ function openRun(manager: ParentRunManager): RunSnapshot {
 	return run;
 }
 
-test("talks to and explicitly closes an open Child without triggering a Parent turn", async () => {
+test("talks to and explicitly closes an open Sub without triggering a Main turn", async () => {
 	const calls: string[][] = [];
 	const messages: unknown[] = [];
 	const pi = {
@@ -70,13 +70,13 @@ test("talks to and explicitly closes an open Child without triggering a Parent t
 			return { code: 0, stdout: "{}", stderr: "", killed: false };
 		},
 	} as unknown as ExtensionAPI;
-	const manager = new ParentRunManager(pi);
+	const manager = new MainRunManager(pi);
 	const run = openRun(manager);
 
 	const sent = manager.talk(run.runId, "Please inspect the latest commit.");
 	assert.equal(sent.run, run);
 	assert.equal(manager.titleFor(run.runId.slice(0, 4)), "Review MR");
-	assert.equal(listTalkToChild(run.channelDir, readManifest(run.channelDir))[0]?.message, "Please inspect the latest commit.");
+	assert.equal(listTalkToSub(run.channelDir, readManifest(run.channelDir))[0]?.message, "Please inspect the latest commit.");
 
 	await manager.close(run.runId, "Accepted");
 	assert.equal(manager.runs.has(run.runId), false);
@@ -86,15 +86,17 @@ test("talks to and explicitly closes an open Child without triggering a Parent t
 	assert.deepEqual(messages, []);
 });
 
-test("waits for an idle Parent and triggers exactly one turn for a Child message", async () => {
+test("waits for an idle Main and triggers exactly one turn for a Sub message", async () => {
 	const messages: Array<{ message: unknown; options: unknown }> = [];
 	const pi = {
 		appendEntry: () => {},
 		sendMessage: (message: unknown, options: unknown) => messages.push({ message, options }),
 	} as unknown as ExtensionAPI;
-	const manager = new ParentRunManager(pi);
+	const manager = new MainRunManager(pi);
 	const run = openRun(manager);
-	talkToParent(run.channelDir, readManifest(run.channelDir), "Review complete.");
+	const manifest = readManifest(run.channelDir);
+	writeSubSessionInfo(run.channelDir, manifest, { sessionId: "sub-session", sessionFile: "/tmp/sub.jsonl" });
+	talkToMain(run.channelDir, manifest, "Review complete.");
 
 	let idle = false;
 	const ctx = {
@@ -108,6 +110,8 @@ test("waits for an idle Parent and triggers exactly one turn for a Child message
 	await new Promise((resolve) => setTimeout(resolve, 500));
 	manager.shutdown();
 
+	assert.equal(run.subSessionId, "sub-session");
+	assert.equal(run.subSessionFile, "/tmp/sub.jsonl");
 	assert.equal(messages.length, 1);
 	const notification = messages[0];
 	assert.ok(notification);
@@ -115,5 +119,5 @@ test("waits for an idle Parent and triggers exactly one turn for a Child message
 	const delivered = notification.message as { content?: string; details?: { title?: string; message?: string } };
 	assert.match(String(delivered.content), /Review complete\./);
 	assert.deepEqual(delivered.details, { title: "Review MR", message: "Review complete." });
-	assert.deepEqual(listTalkToParent(run.channelDir, readManifest(run.channelDir)), []);
+	assert.deepEqual(listTalkToMain(run.channelDir, readManifest(run.channelDir)), []);
 });

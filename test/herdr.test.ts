@@ -5,15 +5,16 @@ import * as path from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { HerdrTabAdapter } from "../src/adapters/herdr.js";
-import type { ChildLaunchSpec } from "../src/types.js";
+import type { SubLaunchSpec } from "../src/types.js";
 
-const spec: ChildLaunchSpec = {
+const spec: SubLaunchSpec = {
 	runId: "12345678-abcd-4000-8000-123456789abc",
-	parentSessionId: "parent-session-1",
+	mainSessionId: "main-session-1",
 	title: "Research status",
 	task: "Research this topic and summarize it.",
 	cwd: "/tmp/project",
 	projectTrusted: true,
+	resumeSessionId: "session-to-resume",
 	channelDir: "/tmp/channel",
 	token: "token",
 	entryPath: "/tmp/facets.ts",
@@ -61,11 +62,12 @@ test("starts an idle Pi before submitting work through herdr agent prompt", asyn
 		assert.equal(start.args.includes(spec.task), false);
 		assert.equal(start.args.includes(integration), true);
 		assert.equal(start.args.includes("--no-session"), false);
+		assert.deepEqual(start.args.slice(start.args.indexOf("--session"), start.args.indexOf("--session") + 2), ["--session", "session-to-resume"]);
 		assert.equal(start.args.includes("--approve"), true);
 		assert.equal(start.args.includes("--no-approve"), false);
 		assert.ok(metadata);
-		assert.equal(metadata.args.includes("facets_role=subagent"), true);
-		assert.equal(metadata.args.includes("facets_parent_session=parent-session-1"), true);
+		assert.equal(metadata.args.includes("facets_role=sub"), true);
+		assert.equal(metadata.args.includes("facets_main_session=main-session-1"), true);
 		assert.equal(prompt.args.includes(spec.task), true);
 		assert.ok(calls.indexOf(start) < calls.indexOf(metadata));
 		assert.ok(calls.indexOf(metadata) < calls.indexOf(prompt));

@@ -27,7 +27,7 @@ function runAction(action: string, socketPath: string, stateDir: string): Promis
 	});
 }
 
-test("Herdr companion action hides and toggles Facets subagents", { skip: process.platform === "win32" }, async () => {
+test("Herdr companion action hides and toggles Facets subs", { skip: process.platform === "win32" }, async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-facets-herdr-view-"));
 	const socketPath = path.join(root, "herdr.sock");
 	const stateDir = path.join(root, "state");
@@ -53,10 +53,10 @@ test("Herdr companion action hides and toggles Facets subagents", { skip: proces
 		assert.equal(requests[0]?.method, "agent.view.set");
 		assert.deepEqual((requests[0]?.params as { filter: unknown }).filter, {
 			op: "not",
-			filter: { op: "eq", field: { token: "facets_role" }, value: "subagent" },
+			filter: { op: "eq", field: { token: "facets_role" }, value: "sub" },
 		});
 		assert.equal(requests[1]?.method, "agent.view.clear");
-		assert.equal(JSON.parse(fs.readFileSync(path.join(stateDir, "visibility.json"), "utf8")).showSubagents, true);
+		assert.equal(JSON.parse(fs.readFileSync(path.join(stateDir, "visibility.json"), "utf8")).showSubs, true);
 	} finally {
 		await new Promise<void>((resolve) => server.close(() => resolve()));
 		fs.rmSync(root, { recursive: true, force: true });
