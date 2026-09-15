@@ -5,7 +5,7 @@ import { registerParentTools } from "../src/tools/parent.js";
 
 interface CapturedTool {
 	name: string;
-	renderCall?: (args: unknown, theme: unknown, context: { expanded: boolean }) => { render(width: number): string[] };
+	renderCall?: (args: unknown, theme: unknown, context: { expanded: boolean; state?: Record<string, unknown> }) => { render(width: number): string[] };
 	renderResult?: (result: unknown, options: { isPartial: boolean }, theme: unknown, context?: { isError: boolean }) => { render(width: number): string[] };
 }
 
@@ -45,7 +45,7 @@ test("renders talk message content", () => {
 	const tools: CapturedTool[] = [];
 	const pi = { registerTool: (tool: CapturedTool) => tools.push(tool) } as unknown as ExtensionAPI;
 	const runs = new Map([["c3b22f28-abcd", { runId: "c3b22f28-abcd", title: "Review MR" }]]);
-	registerParentTools(pi, { runs } as never);
+	registerParentTools(pi, { runs, titleFor: () => "Review MR" } as never);
 	const talk = tools.find((tool) => tool.name === "talk");
 	assert.ok(talk?.renderCall);
 	assert.ok(talk.renderResult);
@@ -65,6 +65,11 @@ test("renders talk message content", () => {
 	const result = talk.renderResult({ details: {} }, { isPartial: false }, theme, { isError: false })
 		.render(120).join("\n");
 	assert.equal(result.trim(), "");
+	const close = tools.find((tool) => tool.name === "close_child");
+	assert.ok(close?.renderCall);
+	const closeCall = close.renderCall({ runId: "c3b22f28" }, theme, { expanded: false, state: {} })
+		.render(120).join("\n").trimEnd();
+	assert.equal(closeCall, "close · Review MR");
 });
 
 test("renders open Child sessions as compact cards with readable durations", () => {

@@ -61,10 +61,9 @@ function openRun(manager: ParentRunManager): RunSnapshot {
 
 test("talks to and explicitly closes an open Child without triggering a Parent turn", async () => {
 	const calls: string[][] = [];
-	const entries: Array<{ type: string; data: unknown }> = [];
 	const messages: unknown[] = [];
 	const pi = {
-		appendEntry: (type: string, data: unknown) => entries.push({ type, data }),
+		appendEntry: () => {},
 		sendMessage: (message: unknown) => messages.push(message),
 		exec: async (_command: string, args: string[]) => {
 			calls.push(args);
@@ -76,14 +75,15 @@ test("talks to and explicitly closes an open Child without triggering a Parent t
 
 	const sent = manager.talk(run.runId, "Please inspect the latest commit.");
 	assert.equal(sent.run, run);
+	assert.equal(manager.titleFor(run.runId.slice(0, 4)), "Review MR");
 	assert.equal(listTalkToChild(run.channelDir, readManifest(run.channelDir))[0]?.message, "Please inspect the latest commit.");
 
 	await manager.close(run.runId, "Accepted");
 	assert.equal(manager.runs.has(run.runId), false);
+	assert.equal(manager.titleFor(run.runId), "Review MR");
 	assert.equal(fs.existsSync(run.channelDir), false);
 	assert.deepEqual(calls.at(-1), ["tab", "close", "w1:t2"]);
 	assert.deepEqual(messages, []);
-	assert.deepEqual(entries, [{ type: "facets-notice", data: "Child closed: Review MR" }]);
 });
 
 test("waits for an idle Parent and triggers exactly one turn for a Child message", async () => {

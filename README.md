@@ -105,7 +105,7 @@ Children launch with:
 
 A child receives the configured profile tools plus the mandatory `talk` protocol tool. The parent resolves the profile once and stores that immutable launch snapshot in the channel manifest, so later config edits cannot change an already-running child.
 
-The Parent TUI renders each launch with the selected profile plus its configured tool and skill names; long capability lists are compacted. It otherwise receives only compact lifecycle notices. Each Child `talk` message is stored as one visible custom message in the Parent session, rendered with the Child title and a three-line preview. This exposes only explicit `talk` deliveries, never the Child transcript.
+The Parent TUI renders each launch with the selected profile plus its configured tool and skill names; long capability lists are compacted. Facets does not add separate Child-created or Child-closed lifecycle messages. Each Child `talk` message is stored as one visible custom message in the Parent session, rendered with the Child title and a three-line preview. This exposes only explicit `talk` deliveries, never the Child transcript.
 
 This is a protocol boundary, not an operating-system sandbox. A child with shell access runs as the same OS user and may be able to access files outside the project. A future hardened adapter should run write-capable children in a container or restricted worktree environment.
 

@@ -18,7 +18,6 @@ import type { ResolvedProfile } from "./profiles/types.js";
 import type { DelegateManifest, RunSnapshot } from "./types.js";
 
 const RUN_ENTRY = "facets-run";
-const NOTICE_TYPE = "facets-notice";
 const POLL_MS = 400;
 
 function parseSnapshot(value: unknown): RunSnapshot | undefined {
@@ -46,6 +45,7 @@ function parseSnapshot(value: unknown): RunSnapshot | undefined {
 
 export class ParentRunManager {
 	readonly runs = new Map<string, RunSnapshot>();
+	private readonly titles = new Map<string, string>();
 	private readonly adapters: AdapterRegistry;
 	private readonly seenMessages = new Set<string>();
 	private poller?: ReturnType<typeof setInterval>;
@@ -79,6 +79,7 @@ export class ParentRunManager {
 			if (snapshot) latest.set(snapshot.runId, snapshot);
 		}
 		for (const run of latest.values()) {
+			this.titles.set(run.runId, run.title);
 			if (fs.existsSync(run.channelDir)) this.runs.set(run.runId, run);
 		}
 	}
@@ -86,7 +87,17 @@ export class ParentRunManager {
 	private save(run: RunSnapshot): void {
 		run.updatedAt = Date.now();
 		this.runs.set(run.runId, run);
+		this.titles.set(run.runId, run.title);
 		this.pi.appendEntry(RUN_ENTRY, { ...run });
+	}
+
+	titleFor(runId: string): string | undefined {
+		const open = this.runs.get(runId) ?? [...this.runs.values()].find((run) => run.runId.startsWith(runId));
+		if (open) {
+			this.titles.set(open.runId, open.title);
+			return open.title;
+		}
+		return this.titles.get(runId) ?? [...this.titles].find(([id]) => id.startsWith(runId))?.[1];
 	}
 
 	private findRun(runId: string): RunSnapshot {
@@ -142,7 +153,6 @@ export class ParentRunManager {
 				entryPath,
 			}, signal);
 			this.save(run);
-			this.recordNotice(`Child created: ${run.title}`);
 			return run;
 		} catch (error) {
 			this.runs.delete(run.runId);
@@ -167,7 +177,6 @@ export class ParentRunManager {
 		await this.adapters.close(run.surface);
 		this.runs.delete(run.runId);
 		removeChannel(run.channelDir);
-		this.recordNotice(`Child closed: ${run.title}`);
 		return run;
 	}
 
@@ -178,7 +187,6 @@ export class ParentRunManager {
 			if (readChildClosed(run.channelDir, manifest)) {
 				this.runs.delete(run.runId);
 				removeChannel(run.channelDir);
-				this.recordNotice(`Child closed: ${run.title}`);
 				continue;
 			}
 			if (!this.ctx?.isIdle()) continue;
@@ -193,10 +201,6 @@ export class ParentRunManager {
 		}
 	}
 
-	private recordNotice(content: string): void {
-		this.pi.appendEntry(NOTICE_TYPE, content);
-	}
-
 	private notify(run: RunSnapshot, message: string): void {
 		this.pi.sendMessage({
 			customType: MESSAGE_TYPE,
@@ -207,4 +211,4 @@ export class ParentRunManager {
 	}
 }
 
-export { NOTICE_TYPE, RUN_ENTRY };
+export { RUN_ENTRY };

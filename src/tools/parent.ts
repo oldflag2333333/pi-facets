@@ -14,8 +14,7 @@ function normalizeTitle(value: string): string {
 }
 
 function findChildTitle(manager: ParentRunManager, runId: unknown): string | undefined {
-	if (typeof runId !== "string" || !runId) return;
-	return (manager.runs.get(runId) ?? [...manager.runs.values()].find((run) => run.runId.startsWith(runId)))?.title;
+	return typeof runId === "string" && runId ? manager.titleFor(runId) : undefined;
 }
 
 function formatElapsed(seconds: number): string {

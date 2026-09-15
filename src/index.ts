@@ -3,16 +3,10 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import { MESSAGE_TYPE } from "./channel.js";
 import { ParentContextRuntime } from "./parent-context.js";
 import { StartupProfileRuntime } from "./profiles/runtime.js";
-import { ParentRunManager, NOTICE_TYPE } from "./run-manager.js";
+import { ParentRunManager } from "./run-manager.js";
 import { registerChild } from "./tools/child.js";
 import { talkView } from "./talk-render.js";
 import { registerParentTools } from "./tools/parent.js";
-
-function contentText(content: unknown): string {
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return "Facets update";
-	return content.map((part) => part && typeof part === "object" && "text" in part ? String(part.text) : "").filter(Boolean).join("\n");
-}
 
 export default function piDelegate(pi: ExtensionAPI): void {
 	if (process.env.PI_FACETS_ROLE === "child") {
@@ -40,10 +34,6 @@ export default function piDelegate(pi: ExtensionAPI): void {
 		box.addChild(new Text(text, 0, 0));
 		return box;
 	});
-	pi.registerEntryRenderer(NOTICE_TYPE, (entry, _options, theme) => {
-		return new Text(`${theme.fg("accent", "•")} ${theme.fg("muted", contentText(entry.data))}`, 0, 0);
-	});
-
 	pi.on("session_start", (_event, ctx) => manager.start(ctx));
 
 	pi.on("session_shutdown", () => manager.shutdown());
