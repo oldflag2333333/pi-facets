@@ -5,14 +5,16 @@ import * as path from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { HerdrTabAdapter } from "../src/adapters/herdr.js";
-import type { ChildLaunchSpec } from "../src/types.js";
+import type { SubLaunchSpec } from "../src/types.js";
 
-const spec: ChildLaunchSpec = {
+const spec: SubLaunchSpec = {
 	runId: "12345678-abcd-4000-8000-123456789abc",
-	parentSessionId: "parent-session-1",
+	mainSessionId: "main-session-1",
 	title: "Research status",
 	task: "Research this topic and summarize it.",
 	cwd: "/tmp/project",
+	projectTrusted: true,
+	resumeSessionId: "session-to-resume",
 	channelDir: "/tmp/channel",
 	token: "token",
 	entryPath: "/tmp/facets.ts",
@@ -27,6 +29,31 @@ const spec: ChildLaunchSpec = {
 		resolvedExtensions: ["/tmp/web.ts"],
 	},
 };
+
+test("reads live agent status by pane and does not guess on errors or mismatches", async () => {
+	let stdout = JSON.stringify({ result: { agent: { pane_id: "w1:p2", tab_id: "w1:t2", agent_status: "working" } } });
+	let code = 0;
+	const calls: string[][] = [];
+	const pi = { exec: async (_command: string, args: string[]) => {
+		calls.push(args);
+		return { code, stdout, stderr: "", killed: false };
+	} } as unknown as ExtensionAPI;
+	const adapter = new HerdrTabAdapter(pi);
+	const handle = { adapter: "herdr" as const, paneId: "w1:p2", tabId: "w1:t2" };
+	assert.equal(await adapter.status(handle), "working");
+	assert.deepEqual(calls, [["agent", "get", "w1:p2"]]);
+	for (const status of ["idle", "blocked"] as const) {
+		stdout = JSON.stringify({ result: { agent: { pane_id: "w1:p2", tab_id: "w1:t2", agent_status: status } } });
+		assert.equal(await adapter.status(handle), status);
+	}
+	stdout = JSON.stringify({ result: { agent: { pane_id: "w1:p3", tab_id: "w1:t2", agent_status: "working" } } });
+	assert.equal(await adapter.status(handle), "unknown");
+	stdout = "not json";
+	assert.equal(await adapter.status(handle), "unknown");
+	code = 1;
+	assert.equal(await adapter.status(handle), "unknown");
+	assert.equal(await adapter.status(undefined), "unknown");
+});
 
 test("starts an idle Pi before submitting work through herdr agent prompt", async () => {
 	const previousEnvironment = process.env.HERDR_ENV;
@@ -60,9 +87,12 @@ test("starts an idle Pi before submitting work through herdr agent prompt", asyn
 		assert.equal(start.args.includes(spec.task), false);
 		assert.equal(start.args.includes(integration), true);
 		assert.equal(start.args.includes("--no-session"), false);
+		assert.deepEqual(start.args.slice(start.args.indexOf("--session"), start.args.indexOf("--session") + 2), ["--session", "session-to-resume"]);
+		assert.equal(start.args.includes("--approve"), true);
+		assert.equal(start.args.includes("--no-approve"), false);
 		assert.ok(metadata);
-		assert.equal(metadata.args.includes("facets_role=subagent"), true);
-		assert.equal(metadata.args.includes("facets_parent_session=parent-session-1"), true);
+		assert.equal(metadata.args.includes("facets_role=sub"), true);
+		assert.equal(metadata.args.includes("facets_main_session=main-session-1"), true);
 		assert.equal(prompt.args.includes(spec.task), true);
 		assert.ok(calls.indexOf(start) < calls.indexOf(metadata));
 		assert.ok(calls.indexOf(metadata) < calls.indexOf(prompt));

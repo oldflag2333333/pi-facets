@@ -27,11 +27,11 @@ test("builds a concise startup context with the effective profiles", () => {
 	assert.match(context, /Available Facets delegation profiles/);
 	assert.match(context, /research \[global, ephemeral\]: Research the web/);
 	assert.match(context, /reviewer \[project, persistent\]: Review this project/);
-	assert.match(context, /create_child\.profile/);
+	assert.match(context, /delegate\.profile/);
 	assert.doesNotMatch(context, /talk|tools:/);
 });
 
-test("tells the parent not to delegate when no valid profile exists", () => {
+test("tells the Main not to delegate when no valid profile exists", () => {
 	const context = buildProfilesContext({ profiles: new Map(), diagnostics: [] });
 	assert.match(context, /No valid profiles are configured/);
 });

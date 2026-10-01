@@ -34,11 +34,11 @@ test("derives and deduplicates extension entry paths from selected tool provenan
 	}
 });
 
-test("rejects tools whose implementation cannot be recreated in a child process", () => {
+test("rejects tools whose implementation cannot be recreated in a Sub process", () => {
 	assert.throws(
 		() => resolveToolExtensions(profile(["sdk_tool"]), [
 			{ name: "sdk_tool", sourceInfo: { path: "<sdk:sdk_tool>", source: "sdk" } },
 		]),
-		/cannot be loaded in an isolated child/,
+		/cannot be loaded in an isolated Sub/,
 	);
 });

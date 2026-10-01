@@ -3,7 +3,7 @@ import type { ResolvedProfile, SessionPersistence } from "./profiles/types.js";
 export interface DelegateManifest {
 	version: 1;
 	runId: string;
-	parentSessionId: string;
+	mainSessionId: string;
 	title: string;
 	task: string;
 	cwd: string;
@@ -21,6 +21,27 @@ export interface TalkMessage {
 	message: string;
 }
 
+export interface SubSessionInfo {
+	version: 1;
+	runId: string;
+	token: string;
+	sessionId: string;
+	sessionFile: string;
+	createdAt: number;
+}
+
+export interface ActiveTurn {
+	version: 1;
+	runId: string;
+	token: string;
+	turnId: string;
+	createdAt: number;
+}
+
+export interface InterruptRequest extends ActiveTurn {
+	requestedAt: number;
+}
+
 export interface CloseMessage {
 	version: 1;
 	runId: string;
@@ -29,13 +50,15 @@ export interface CloseMessage {
 	reason: string;
 }
 
-export interface ChildClosedMessage {
+export interface SubClosedMessage {
 	version: 1;
 	runId: string;
 	token: string;
 	createdAt: number;
 	reason: string;
 }
+
+export type SubAgentStatus = "working" | "blocked" | "idle" | "unknown";
 
 export interface SurfaceHandle {
 	adapter: "herdr";
@@ -46,7 +69,7 @@ export interface SurfaceHandle {
 export interface RunSnapshot {
 	version: 1;
 	runId: string;
-	parentSessionId: string;
+	mainSessionId: string;
 	title: string;
 	cwd: string;
 	profileName: string;
@@ -54,24 +77,28 @@ export interface RunSnapshot {
 	channelDir: string;
 	createdAt: number;
 	updatedAt: number;
+	subSessionId?: string;
+	subSessionFile?: string;
 	surface?: SurfaceHandle;
 }
 
-export interface ChildLaunchSpec {
+export interface SubLaunchSpec {
 	runId: string;
-	parentSessionId: string;
+	mainSessionId: string;
 	title: string;
 	task: string;
 	cwd: string;
+	projectTrusted: boolean;
+	resumeSessionId?: string;
 	profile: ResolvedProfile;
 	channelDir: string;
 	token: string;
 	entryPath: string;
 }
 
-export interface ChildSurfaceAdapter {
+export interface SubSurfaceAdapter {
 	readonly id: "herdr";
 	available(): Promise<boolean>;
-	launch(spec: ChildLaunchSpec, signal?: AbortSignal): Promise<SurfaceHandle>;
+	launch(spec: SubLaunchSpec, signal?: AbortSignal): Promise<SurfaceHandle>;
 	close(handle: SurfaceHandle): Promise<void>;
 }

@@ -11,6 +11,8 @@ export interface ProfileDefinition {
 	tools: string[];
 	skills?: string[];
 	instructions?: string;
+	/** Full handwritten system prompt loaded from a directory profile's SYSTEM.md. */
+	systemPrompt?: string;
 }
 
 export interface LoadedProfile extends ProfileDefinition {

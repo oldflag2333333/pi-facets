@@ -1,37 +1,33 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { AdapterRegistry } from "./adapters/index.js";
 import {
 	createChannel,
-	listTalkToParent,
-	readChildClosed,
+	MESSAGE_TYPE,
+	readActiveTurn,
+	listTalkToMain,
+	readSubClosed,
+	readSubSessionInfo,
 	readManifest,
 	removeChannel,
 	removeTalk,
-	talkToChild,
+	talkToSub,
 	writeClose,
+	writeInterrupt,
 } from "./channel.js";
 import type { ResolvedProfile } from "./profiles/types.js";
-import type { DelegateManifest, RunSnapshot } from "./types.js";
+import { listResumableSubSessions, resolveResumableSubSession } from "./sessions.js";
+import type { DelegateManifest, RunSnapshot, SubAgentStatus } from "./types.js";
 
 const RUN_ENTRY = "facets-run";
-const NOTICE_TYPE = "facets-notice";
 const POLL_MS = 400;
-
-interface PendingPayload {
-	id: string;
-	messageId: string;
-	text: string;
-	runId: string;
-}
 
 function parseSnapshot(value: unknown): RunSnapshot | undefined {
 	if (!value || typeof value !== "object") return;
 	const item = value as Partial<RunSnapshot>;
-	if (item.version !== 1 || typeof item.runId !== "string" || typeof item.parentSessionId !== "string"
+	if (item.version !== 1 || typeof item.runId !== "string" || typeof item.mainSessionId !== "string"
 		|| typeof item.title !== "string" || typeof item.cwd !== "string"
 		|| typeof item.profileName !== "string" || typeof item.channelDir !== "string"
 		|| typeof item.createdAt !== "number" || typeof item.updatedAt !== "number") return;
@@ -39,7 +35,7 @@ function parseSnapshot(value: unknown): RunSnapshot | undefined {
 	return {
 		version: 1,
 		runId: item.runId,
-		parentSessionId: item.parentSessionId,
+		mainSessionId: item.mainSessionId,
 		title: item.title,
 		cwd: item.cwd,
 		profileName: item.profileName,
@@ -47,15 +43,17 @@ function parseSnapshot(value: unknown): RunSnapshot | undefined {
 		channelDir: item.channelDir,
 		createdAt: item.createdAt,
 		updatedAt: item.updatedAt,
+		...(typeof item.subSessionId === "string" ? { subSessionId: item.subSessionId } : {}),
+		...(typeof item.subSessionFile === "string" ? { subSessionFile: item.subSessionFile } : {}),
 		...(item.surface ? { surface: item.surface } : {}),
 	};
 }
 
-export class ParentRunManager {
+export class MainRunManager {
 	readonly runs = new Map<string, RunSnapshot>();
+	private readonly titles = new Map<string, string>();
 	private readonly adapters: AdapterRegistry;
 	private readonly seenMessages = new Set<string>();
-	private readonly payloads = new Map<string, PendingPayload>();
 	private poller?: ReturnType<typeof setInterval>;
 	private ctx?: ExtensionContext;
 
@@ -87,6 +85,7 @@ export class ParentRunManager {
 			if (snapshot) latest.set(snapshot.runId, snapshot);
 		}
 		for (const run of latest.values()) {
+			this.titles.set(run.runId, run.title);
 			if (fs.existsSync(run.channelDir)) this.runs.set(run.runId, run);
 		}
 	}
@@ -94,43 +93,67 @@ export class ParentRunManager {
 	private save(run: RunSnapshot): void {
 		run.updatedAt = Date.now();
 		this.runs.set(run.runId, run);
+		this.titles.set(run.runId, run.title);
 		this.pi.appendEntry(RUN_ENTRY, { ...run });
 	}
 
-	private findRun(runId: string): RunSnapshot {
-		const run = this.runs.get(runId) ?? [...this.runs.values()].find((candidate) => candidate.runId.startsWith(runId));
-		if (!run) throw new Error(`Unknown child '${runId}'.`);
-		return run;
+	titleFor(runId: string): string | undefined {
+		const open = this.runs.get(runId) ?? [...this.runs.values()].find((run) => run.runId.startsWith(runId));
+		if (open) {
+			this.titles.set(open.runId, open.title);
+			return open.title;
+		}
+		return this.titles.get(runId) ?? [...this.titles].find(([id]) => id.startsWith(runId))?.[1];
 	}
 
-	async create(input: {
+	private findRun(runId: string): RunSnapshot {
+		const exact = this.runs.get(runId);
+		if (exact) return exact;
+		const matches = [...this.runs.values()].filter((candidate) => candidate.runId.startsWith(runId));
+		if (matches.length > 1) throw new Error(`Ambiguous Sub prefix '${runId}'. Use a longer run ID.`);
+		if (!matches[0]) throw new Error(`Unknown Sub '${runId}'.`);
+		return matches[0];
+	}
+
+	async delegate(input: {
 		title: string;
 		task: string;
 		cwd: string;
 		profile: ResolvedProfile;
+		resumeSessionId?: string;
 	}, signal?: AbortSignal): Promise<RunSnapshot> {
-		if (!this.ctx) throw new Error("Facets is not attached to an active parent session.");
+		if (!this.ctx) throw new Error("Facets is not attached to an active Main session.");
+		const resume = input.resumeSessionId ? await resolveResumableSubSession(input.resumeSessionId) : undefined;
+		if (resume && input.profile.sessionPersistence !== "persistent") {
+			throw new Error(`Profile '${input.profile.name}' must use sessionPersistence 'persistent' when resuming a Sub session.`);
+		}
+		if (resume && [...this.runs.values()].some((run) => run.subSessionId === resume.sessionId)) {
+			throw new Error(`Persistent Sub session '${resume.sessionId}' is already open.`);
+		}
 		const runId = randomUUID();
-		const parentSessionId = this.ctx.sessionManager.getSessionId();
+		const mainSessionId = this.ctx.sessionManager.getSessionId();
+		const projectTrusted = this.ctx.isProjectTrusted();
+		const cwd = resume?.cwd ?? input.cwd;
 		const channel = createChannel({
 			runId,
-			parentSessionId,
+			mainSessionId,
 			title: input.title,
 			task: input.task,
-			cwd: input.cwd,
+			cwd,
 			profile: input.profile,
 		});
 		const run: RunSnapshot = {
 			version: 1,
 			runId,
-			parentSessionId,
+			mainSessionId,
 			title: input.title,
-			cwd: input.cwd,
+			cwd,
 			profileName: input.profile.name,
 			sessionPersistence: input.profile.sessionPersistence ?? "ephemeral",
 			channelDir: channel.channelDir,
 			createdAt: Date.now(),
 			updatedAt: Date.now(),
+			...(resume ? { subSessionId: resume.sessionId, subSessionFile: resume.sessionFile } : {}),
 		};
 		this.save(run);
 		try {
@@ -138,17 +161,23 @@ export class ParentRunManager {
 			const entryPath = fileURLToPath(new URL("./index.ts", import.meta.url));
 			run.surface = await adapter.launch({
 				runId,
-				parentSessionId,
+				mainSessionId,
 				title: input.title,
 				task: input.task,
-				cwd: input.cwd,
+				cwd,
+				projectTrusted,
+				...(resume ? { resumeSessionId: resume.sessionId } : {}),
 				profile: input.profile,
 				channelDir: channel.channelDir,
 				token: channel.token,
 				entryPath,
 			}, signal);
+			const session = readSubSessionInfo(run.channelDir, channel);
+			if (session) {
+				run.subSessionId = session.sessionId;
+				run.subSessionFile = session.sessionFile;
+			}
 			this.save(run);
-			this.notify(`Child created: ${run.title}`);
 			return run;
 		} catch (error) {
 			this.runs.delete(run.runId);
@@ -160,8 +189,33 @@ export class ParentRunManager {
 	talk(runId: string, message: string): { run: RunSnapshot; messageId: string } {
 		const run = this.findRun(runId);
 		const manifest = readManifest(run.channelDir);
-		const sent = talkToChild(run.channelDir, manifest, message);
+		const sent = talkToSub(run.channelDir, manifest, message);
 		return { run, messageId: sent.id };
+	}
+
+	async subs(all = false): Promise<{
+		open: Array<{ run: RunSnapshot; status: SubAgentStatus }>;
+		resumable: Awaited<ReturnType<typeof listResumableSubSessions>>;
+	}> {
+		const runs = [...this.runs.values()];
+		const activeSessionIds = new Set(runs.flatMap((run) => run.subSessionId ? [run.subSessionId] : []));
+		const [open, resumable] = await Promise.all([
+			Promise.all(runs.map(async (run) => ({ run, status: await this.adapters.status(run.surface) }))),
+			listResumableSubSessions(activeSessionIds),
+		]);
+		return {
+			open: all ? open : open.filter(({ run, status }) => run.sessionPersistence === "persistent" || status === "working" || status === "blocked"),
+			resumable,
+		};
+	}
+
+	interrupt(runId: string): RunSnapshot {
+		const run = this.findRun(runId);
+		const manifest = readManifest(run.channelDir);
+		const turn = readActiveTurn(run.channelDir, manifest);
+		if (!turn) throw new Error(`Sub '${run.title}' has no active turn to interrupt.`);
+		writeInterrupt(run.channelDir, manifest, turn);
+		return run;
 	}
 
 	async close(runId: string, reason: string): Promise<RunSnapshot> {
@@ -172,62 +226,45 @@ export class ParentRunManager {
 		} catch {}
 		await this.adapters.close(run.surface);
 		this.runs.delete(run.runId);
-		for (const [id, payload] of this.payloads) {
-			if (payload.runId === run.runId) this.payloads.delete(id);
-		}
 		removeChannel(run.channelDir);
-		this.notify(`Child closed: ${run.title}`);
 		return run;
-	}
-
-	contextMessages(): AgentMessage[] {
-		return [...this.payloads.values()].map((payload) => ({
-			role: "user" as const,
-			content: [{ type: "text" as const, text: payload.text }],
-			timestamp: Date.now(),
-		}));
-	}
-
-	settled(): void {
-		for (const [id, payload] of this.payloads) {
-			this.payloads.delete(id);
-			const run = this.runs.get(payload.runId);
-			if (run) removeTalk(run.channelDir, "to-parent", payload.messageId);
-		}
 	}
 
 	private poll(): void {
 		for (const run of this.runs.values()) {
 			let manifest: DelegateManifest;
 			try { manifest = readManifest(run.channelDir); } catch { continue; }
-			if (readChildClosed(run.channelDir, manifest)) {
+			const session = readSubSessionInfo(run.channelDir, manifest);
+			if (session && (run.subSessionId !== session.sessionId || run.subSessionFile !== session.sessionFile)) {
+				run.subSessionId = session.sessionId;
+				run.subSessionFile = session.sessionFile;
+				this.save(run);
+			}
+			if (readSubClosed(run.channelDir, manifest)) {
 				this.runs.delete(run.runId);
 				removeChannel(run.channelDir);
-				this.notify(`Child closed: ${run.title}`);
 				continue;
 			}
-			for (const message of listTalkToParent(run.channelDir, manifest)) {
+			if (!this.ctx?.isIdle()) continue;
+			for (const message of listTalkToMain(run.channelDir, manifest)) {
 				const key = `${run.runId}:${message.id}`;
 				if (this.seenMessages.has(key)) continue;
 				this.seenMessages.add(key);
-				this.payloads.set(key, {
-					id: key,
-					messageId: message.id,
-					runId: run.runId,
-					text: `[Facets child message]\nChild '${run.title}' (${run.runId}) says:\n${message.message}\n\nUse talk with runId '${run.runId}' to respond, or close_child when the delivery is accepted and no more work is needed.`,
-				});
-				this.notify(`Message from child: ${run.title}`);
+				this.notify(run, message.message);
+				removeTalk(run.channelDir, "to-main", message.id);
+				return;
 			}
 		}
 	}
 
-	private notify(content: string): void {
+	private notify(run: RunSnapshot, message: string): void {
 		this.pi.sendMessage({
-			customType: NOTICE_TYPE,
-			content,
+			customType: MESSAGE_TYPE,
+			content: `[Facets Sub message]\nSub '${run.title}' (${run.runId}) says:\n${message}\n\nUse talk with runId '${run.runId}' to respond, or close_sub when the delivery is accepted and no more work is needed.`,
 			display: true,
+			details: { title: run.title, message },
 		}, { deliverAs: "followUp", triggerTurn: true });
 	}
 }
 
-export { NOTICE_TYPE, RUN_ENTRY };
+export { RUN_ENTRY };

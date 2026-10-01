@@ -14,6 +14,9 @@ import type {
 
 const PROFILE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const MAX_PROFILE_BYTES = 256 * 1024;
+const MAX_SYSTEM_PROMPT_BYTES = 256 * 1024;
+const PROFILE_CONFIG_FILE = "config.json";
+const PROFILE_SYSTEM_PROMPT_FILE = "SYSTEM.md";
 const ALLOWED_KEYS = new Set([
 	"version",
 	"name",
@@ -35,7 +38,7 @@ function stringArray(value: unknown, maxItems: number): value is string[] {
 		&& value.every((item) => typeof item === "string" && item.trim().length > 0 && item.length <= 4096);
 }
 
-function parseProfile(value: unknown, sourcePath: string): ProfileDefinition {
+function parseProfile(value: unknown, expectedName: string): ProfileDefinition {
 	if (!isRecord(value)) throw new Error("profile must be a JSON object");
 	const unknownKeys = Object.keys(value).filter((key) => !ALLOWED_KEYS.has(key));
 	if (unknownKeys.length > 0) throw new Error(`unknown fields: ${unknownKeys.join(", ")}`);
@@ -57,8 +60,7 @@ function parseProfile(value: unknown, sourcePath: string): ProfileDefinition {
 	if (typeof value.model === "string" && value.model.length > 512) throw new Error("model exceeds 512 characters");
 	if (typeof value.thinkingLevel === "string" && value.thinkingLevel.length > 128) throw new Error("thinkingLevel exceeds 128 characters");
 	if (typeof value.instructions === "string" && value.instructions.length > 64 * 1024) throw new Error("instructions exceeds 65536 characters");
-	const stem = path.basename(sourcePath, path.extname(sourcePath));
-	if (stem !== value.name) throw new Error(`name '${value.name}' must match filename '${stem}.json'`);
+	if (expectedName !== value.name) throw new Error(`name '${value.name}' must match profile entry '${expectedName}'`);
 	return {
 		version: 1,
 		name: value.name,
@@ -74,27 +76,119 @@ function parseProfile(value: unknown, sourcePath: string): ProfileDefinition {
 	};
 }
 
-function loadDirectory(directory: string, source: ProfileSource, diagnostics: ProfileDiagnostic[]): Map<string, LoadedProfile> {
-	const profiles = new Map<string, LoadedProfile>();
-	let names: string[];
+interface ProfileCandidate {
+	name: string;
+	configPath: string;
+	directoryPath?: string;
+}
+
+interface LoadedProfileDirectory {
+	profiles: Map<string, LoadedProfile>;
+	invalidNames: Set<string>;
+}
+
+function readSystemPrompt(directoryPath: string): string | undefined {
+	const systemPromptPath = path.join(directoryPath, PROFILE_SYSTEM_PROMPT_FILE);
+	let stat: fs.Stats;
 	try {
-		names = fs.readdirSync(directory).filter((name) => name.endsWith(".json")).sort();
+		stat = fs.statSync(systemPromptPath);
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return profiles;
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw error;
+	}
+	if (!stat.isFile()) throw new Error(`${PROFILE_SYSTEM_PROMPT_FILE} must be a regular file`);
+	if (stat.size > MAX_SYSTEM_PROMPT_BYTES) {
+		throw new Error(`${PROFILE_SYSTEM_PROMPT_FILE} exceeds ${MAX_SYSTEM_PROMPT_BYTES} bytes`);
+	}
+	const content = fs.readFileSync(systemPromptPath, "utf8").replace(/^\uFEFF/, "");
+	if (!content.trim()) throw new Error(`${PROFILE_SYSTEM_PROMPT_FILE} must not be empty`);
+	return content;
+}
+
+function loadDirectory(directory: string, source: ProfileSource, diagnostics: ProfileDiagnostic[]): LoadedProfileDirectory {
+	const profiles = new Map<string, LoadedProfile>();
+	const invalidNames = new Set<string>();
+	let entryNames: string[];
+	try {
+		entryNames = fs.readdirSync(directory).sort();
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return { profiles, invalidNames };
 		diagnostics.push({ path: directory, message: String(error) });
-		return profiles;
+		return { profiles, invalidNames };
 	}
-	for (const name of names) {
-		const sourcePath = path.join(directory, name);
+
+	const candidates = new Map<string, ProfileCandidate[]>();
+	for (const entryName of entryNames) {
+		const entryPath = path.join(directory, entryName);
+		let stat: fs.Stats;
 		try {
-			if (fs.statSync(sourcePath).size > MAX_PROFILE_BYTES) throw new Error(`profile exceeds ${MAX_PROFILE_BYTES} bytes`);
-			const parsed = parseProfile(JSON.parse(fs.readFileSync(sourcePath, "utf8")) as unknown, sourcePath);
-			profiles.set(parsed.name, { ...parsed, source, sourcePath });
+			stat = fs.statSync(entryPath);
 		} catch (error) {
-			diagnostics.push({ path: sourcePath, message: error instanceof Error ? error.message : String(error) });
+			diagnostics.push({ path: entryPath, message: error instanceof Error ? error.message : String(error) });
+			continue;
 		}
+		let candidate: ProfileCandidate | undefined;
+		if (stat.isFile() && entryName.endsWith(".json")) {
+			candidate = { name: path.basename(entryName, ".json"), configPath: entryPath };
+		} else if (stat.isDirectory()) {
+			candidate = {
+				name: entryName,
+				configPath: path.join(entryPath, PROFILE_CONFIG_FILE),
+				directoryPath: entryPath,
+			};
+		}
+		if (!candidate) continue;
+		const entries = candidates.get(candidate.name) ?? [];
+		entries.push(candidate);
+		candidates.set(candidate.name, entries);
 	}
-	return profiles;
+
+	for (const [name, matches] of candidates) {
+		if (!PROFILE_NAME.test(name)) {
+			invalidNames.add(name);
+			diagnostics.push({ path: matches[0]!.configPath, message: "profile entry name must be 1-64 characters using letters, numbers, dot, underscore, or hyphen" });
+			continue;
+		}
+		if (matches.length > 1) {
+			invalidNames.add(name);
+			diagnostics.push({ path: directory, message: `duplicate profile '${name}' is defined as both a JSON file and a directory` });
+			continue;
+		}
+
+		const candidate = matches[0]!;
+		let parsed: ProfileDefinition;
+		try {
+			const stat = fs.statSync(candidate.configPath);
+			if (!stat.isFile()) throw new Error(`${path.basename(candidate.configPath)} must be a regular file`);
+			if (stat.size > MAX_PROFILE_BYTES) throw new Error(`profile exceeds ${MAX_PROFILE_BYTES} bytes`);
+			parsed = parseProfile(JSON.parse(fs.readFileSync(candidate.configPath, "utf8")) as unknown, name);
+		} catch (error) {
+			invalidNames.add(name);
+			diagnostics.push({ path: candidate.configPath, message: error instanceof Error ? error.message : String(error) });
+			continue;
+		}
+
+		let systemPrompt: string | undefined;
+		if (candidate.directoryPath) {
+			try {
+				systemPrompt = readSystemPrompt(candidate.directoryPath);
+			} catch (error) {
+				invalidNames.add(name);
+				diagnostics.push({
+					path: path.join(candidate.directoryPath, PROFILE_SYSTEM_PROMPT_FILE),
+					message: error instanceof Error ? error.message : String(error),
+				});
+				continue;
+			}
+		}
+		profiles.set(parsed.name, {
+			...parsed,
+			...(systemPrompt !== undefined ? { systemPrompt } : {}),
+			source,
+			sourcePath: candidate.configPath,
+		});
+	}
+	return { profiles, invalidNames };
 }
 
 export function globalProfilesDir(): string {
@@ -118,18 +212,13 @@ function ancestorDirectories(cwd: string): string[] {
 
 export function loadProfiles(cwd: string, includeProject: boolean): ProfileCatalog {
 	const diagnostics: ProfileDiagnostic[] = [];
-	const profiles = loadDirectory(globalProfilesDir(), "global", diagnostics);
+	const global = loadDirectory(globalProfilesDir(), "global", diagnostics);
+	const profiles = global.profiles;
 	if (includeProject) {
 		for (const directory of ancestorDirectories(cwd).reverse()) {
-			const projectDir = projectProfilesDir(directory);
-			const diagnosticStart = diagnostics.length;
-			const projectProfiles = loadDirectory(projectDir, "project", diagnostics);
-			for (const diagnostic of diagnostics.slice(diagnosticStart)) {
-				if (path.dirname(diagnostic.path) === projectDir && diagnostic.path.endsWith(".json")) {
-					profiles.delete(path.basename(diagnostic.path, ".json"));
-				}
-			}
-			for (const [name, profile] of projectProfiles) profiles.set(name, profile);
+			const project = loadDirectory(projectProfilesDir(directory), "project", diagnostics);
+			for (const name of project.invalidNames) profiles.delete(name);
+			for (const [name, profile] of project.profiles) profiles.set(name, profile);
 		}
 	}
 	return { profiles, diagnostics };

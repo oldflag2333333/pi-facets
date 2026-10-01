@@ -20,6 +20,13 @@ function writeJson(file: string, value: unknown): void {
 	fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
 }
 
+function writeDirectoryProfile(rootDir: string, name: string, value: unknown, systemPrompt?: string): string {
+	const profileDir = path.join(rootDir, name);
+	writeJson(path.join(profileDir, "config.json"), value);
+	if (systemPrompt !== undefined) fs.writeFileSync(path.join(profileDir, "SYSTEM.md"), systemPrompt);
+	return profileDir;
+}
+
 beforeEach(() => {
 	root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-facets-profiles-"));
 	cwd = path.join(root, "project");
@@ -49,6 +56,58 @@ test("loads global profiles without applying an internal thinking-level enum", (
 	assert.equal(catalog.diagnostics.length, 0);
 	assert.equal(catalog.profiles.get("reviewer")?.source, "global");
 	assert.equal(catalog.profiles.get("reviewer")?.thinkingLevel, "provider-defined-level");
+});
+
+test("loads directory profiles with an optional handwritten system prompt", () => {
+	const profileDir = writeDirectoryProfile(globalProfilesDir(), "reviewer", {
+		version: 1,
+		name: "reviewer",
+		tools: ["read"],
+		instructions: "Ignored when SYSTEM.md exists.",
+	}, "You are a handwritten reviewer.\n");
+	const profile = loadProfiles(cwd, false).profiles.get("reviewer");
+	assert.equal(profile?.sourcePath, path.join(profileDir, "config.json"));
+	assert.equal(profile?.systemPrompt, "You are a handwritten reviewer.\n");
+});
+
+test("rejects an empty directory profile SYSTEM.md", () => {
+	writeDirectoryProfile(globalProfilesDir(), "reviewer", {
+		version: 1,
+		name: "reviewer",
+		tools: ["read"],
+	}, "\n\t\n");
+	const catalog = loadProfiles(cwd, false);
+	assert.equal(catalog.profiles.has("reviewer"), false);
+	assert.equal(path.basename(catalog.diagnostics[0]?.path ?? ""), "SYSTEM.md");
+	assert.match(catalog.diagnostics[0]?.message ?? "", /must not be empty/);
+});
+
+test("uses Pi's normal prompt path when a directory profile has no SYSTEM.md", () => {
+	writeDirectoryProfile(globalProfilesDir(), "reviewer", {
+		version: 1,
+		name: "reviewer",
+		tools: ["read"],
+		instructions: "Append these instructions.",
+	});
+	const profile = loadProfiles(cwd, false).profiles.get("reviewer");
+	assert.equal(profile?.systemPrompt, undefined);
+	assert.equal(profile?.instructions, "Append these instructions.");
+});
+
+test("rejects duplicate file and directory definitions in the same scope", () => {
+	writeJson(path.join(globalProfilesDir(), "reviewer.json"), {
+		version: 1,
+		name: "reviewer",
+		tools: ["read"],
+	});
+	writeDirectoryProfile(globalProfilesDir(), "reviewer", {
+		version: 1,
+		name: "reviewer",
+		tools: ["read", "grep"],
+	});
+	const catalog = loadProfiles(cwd, false);
+	assert.equal(catalog.profiles.has("reviewer"), false);
+	assert.match(catalog.diagnostics[0]?.message ?? "", /duplicate profile/);
 });
 
 test("loads persistent session configuration and rejects unknown values", () => {
@@ -165,16 +224,16 @@ test("reports invalid profiles and does not load them", () => {
 	});
 	const catalog = loadProfiles(cwd, false);
 	assert.equal(catalog.profiles.size, 0);
-	assert.match(catalog.diagnostics[0]?.message ?? "", /must match filename/);
+	assert.match(catalog.diagnostics[0]?.message ?? "", /must match profile entry/);
 });
 
-test("an invalid project override does not silently fall back to a global profile", () => {
+test("an invalid directory project override does not silently fall back to a global profile", () => {
 	writeJson(path.join(globalProfilesDir(), "reviewer.json"), {
 		version: 1,
 		name: "reviewer",
 		tools: ["read"],
 	});
-	writeJson(path.join(projectProfilesDir(cwd), "reviewer.json"), {
+	writeDirectoryProfile(projectProfilesDir(cwd), "reviewer", {
 		version: 1,
 		name: "wrong-name",
 		tools: ["read", "bash"],

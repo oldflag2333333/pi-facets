@@ -3,9 +3,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createChannel, listTalkToChild, readManifest } from "../src/channel.js";
-import { ParentRunManager } from "../src/run-manager.js";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createChannel, listTalkToSub, listTalkToMain, readInterrupt, readManifest, talkToMain, writeActiveTurn, writeSubSessionInfo } from "../src/channel.js";
+import { MainRunManager } from "../src/run-manager.js";
 import type { RunSnapshot } from "../src/types.js";
 
 let root: string;
@@ -23,7 +23,7 @@ afterEach(() => {
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
-function openRun(manager: ParentRunManager): RunSnapshot {
+function openRun(manager: MainRunManager): RunSnapshot {
 	const profile = {
 		version: 1 as const,
 		name: "reviewer",
@@ -36,7 +36,7 @@ function openRun(manager: ParentRunManager): RunSnapshot {
 	};
 	const channel = createChannel({
 		runId: "open-run",
-		parentSessionId: "parent-session",
+		mainSessionId: "main-session",
 		title: "Review MR",
 		task: "Review it.",
 		cwd: "/tmp/project",
@@ -45,7 +45,7 @@ function openRun(manager: ParentRunManager): RunSnapshot {
 	const run: RunSnapshot = {
 		version: 1,
 		runId: channel.runId,
-		parentSessionId: channel.parentSessionId,
+		mainSessionId: channel.mainSessionId,
 		title: channel.title,
 		cwd: channel.cwd,
 		profileName: profile.name,
@@ -59,25 +59,110 @@ function openRun(manager: ParentRunManager): RunSnapshot {
 	return run;
 }
 
-test("talks to and explicitly closes an open Child", async () => {
+test("defaults to active or persistent Subs and can include all open Subs", async () => {
+	const agentDir = path.join(root, "agent");
+	fs.mkdirSync(agentDir);
+	const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	const pi = { exec: async (_command: string, args: string[]) => {
+		const paneId = args[2];
+		const status = paneId === "w1:p3" ? "working" : paneId === "w1:p4" ? "blocked" : "idle";
+		return { code: 0, stdout: JSON.stringify({ result: { agent: { pane_id: paneId, tab_id: `w1:t${paneId?.slice(-1)}`, agent_status: status } } }), stderr: "" };
+	} } as unknown as ExtensionAPI;
+	try {
+		const manager = new MainRunManager(pi);
+		const persistent = openRun(manager);
+		for (const [runId, paneId] of [["busy", "w1:p3"], ["blocked", "w1:p4"], ["idle", "w1:p5"]]) {
+			manager.runs.set(runId, { ...persistent, runId, sessionPersistence: "ephemeral", surface: { adapter: "herdr", paneId, tabId: `w1:t${paneId.slice(-1)}` } });
+		}
+		manager.runs.set("unknown", { ...persistent, runId: "unknown", sessionPersistence: "ephemeral", surface: undefined });
+		const defaults = await manager.subs();
+		assert.deepEqual(defaults.open.map(({ run, status }) => [run.runId, status]), [
+			["open-run", "idle"], ["busy", "working"], ["blocked", "blocked"],
+		]);
+		const all = await manager.subs(true);
+		assert.deepEqual(all.open.map(({ run, status }) => [run.runId, status]), [
+			["open-run", "idle"], ["busy", "working"], ["blocked", "blocked"], ["idle", "idle"], ["unknown", "unknown"],
+		]);
+	} finally {
+		if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
+	}
+});
+
+test("requests interruption only for a current turn and keeps the Sub open", () => {
+	const manager = new MainRunManager({} as ExtensionAPI);
+	const run = openRun(manager);
+	assert.throws(() => manager.interrupt(run.runId), /no active turn/);
+	const manifest = readManifest(run.channelDir);
+	const turn = writeActiveTurn(run.channelDir, manifest);
+	assert.equal(manager.interrupt(run.runId.slice(0, 4)), run);
+	assert.equal(readInterrupt(run.channelDir, manifest)?.turnId, turn.turnId);
+	assert.equal(manager.runs.get(run.runId), run);
+	assert.equal(fs.existsSync(run.channelDir), true);
+	manager.runs.set("open-other", { ...run, runId: "open-other" });
+	assert.throws(() => manager.interrupt("open-"), /Ambiguous Sub prefix/);
+});
+
+test("talks to and explicitly closes an open Sub without triggering a Main turn", async () => {
 	const calls: string[][] = [];
+	const messages: unknown[] = [];
 	const pi = {
 		appendEntry: () => {},
-		sendMessage: () => {},
+		sendMessage: (message: unknown) => messages.push(message),
 		exec: async (_command: string, args: string[]) => {
 			calls.push(args);
 			return { code: 0, stdout: "{}", stderr: "", killed: false };
 		},
 	} as unknown as ExtensionAPI;
-	const manager = new ParentRunManager(pi);
+	const manager = new MainRunManager(pi);
 	const run = openRun(manager);
 
 	const sent = manager.talk(run.runId, "Please inspect the latest commit.");
 	assert.equal(sent.run, run);
-	assert.equal(listTalkToChild(run.channelDir, readManifest(run.channelDir))[0]?.message, "Please inspect the latest commit.");
+	assert.equal(manager.titleFor(run.runId.slice(0, 4)), "Review MR");
+	assert.equal(listTalkToSub(run.channelDir, readManifest(run.channelDir))[0]?.message, "Please inspect the latest commit.");
 
 	await manager.close(run.runId, "Accepted");
 	assert.equal(manager.runs.has(run.runId), false);
+	assert.equal(manager.titleFor(run.runId), "Review MR");
 	assert.equal(fs.existsSync(run.channelDir), false);
 	assert.deepEqual(calls.at(-1), ["tab", "close", "w1:t2"]);
+	assert.deepEqual(messages, []);
+});
+
+test("waits for an idle Main and triggers exactly one turn for a Sub message", async () => {
+	const messages: Array<{ message: unknown; options: unknown }> = [];
+	const pi = {
+		appendEntry: () => {},
+		sendMessage: (message: unknown, options: unknown) => messages.push({ message, options }),
+	} as unknown as ExtensionAPI;
+	const manager = new MainRunManager(pi);
+	const run = openRun(manager);
+	const manifest = readManifest(run.channelDir);
+	writeSubSessionInfo(run.channelDir, manifest, { sessionId: "sub-session", sessionFile: "/tmp/sub.jsonl" });
+	talkToMain(run.channelDir, manifest, "Review complete.");
+
+	let idle = false;
+	const ctx = {
+		isIdle: () => idle,
+		sessionManager: { getEntries: () => [] },
+	} as unknown as ExtensionContext;
+	manager.start(ctx);
+	assert.equal(messages.length, 0);
+
+	idle = true;
+	await new Promise((resolve) => setTimeout(resolve, 500));
+	manager.shutdown();
+
+	assert.equal(run.subSessionId, "sub-session");
+	assert.equal(run.subSessionFile, "/tmp/sub.jsonl");
+	assert.equal(messages.length, 1);
+	const notification = messages[0];
+	assert.ok(notification);
+	assert.deepEqual(notification.options, { deliverAs: "followUp", triggerTurn: true });
+	const delivered = notification.message as { content?: string; details?: { title?: string; message?: string } };
+	assert.match(String(delivered.content), /Review complete\./);
+	assert.deepEqual(delivered.details, { title: "Review MR", message: "Review complete." });
+	assert.deepEqual(listTalkToMain(run.channelDir, readManifest(run.channelDir)), []);
 });
