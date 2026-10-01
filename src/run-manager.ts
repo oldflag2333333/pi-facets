@@ -6,6 +6,7 @@ import { AdapterRegistry } from "./adapters/index.js";
 import {
 	createChannel,
 	MESSAGE_TYPE,
+	readActiveTurn,
 	listTalkToMain,
 	readSubClosed,
 	readSubSessionInfo,
@@ -14,10 +15,11 @@ import {
 	removeTalk,
 	talkToSub,
 	writeClose,
+	writeInterrupt,
 } from "./channel.js";
 import type { ResolvedProfile } from "./profiles/types.js";
 import { listResumableSubSessions, resolveResumableSubSession } from "./sessions.js";
-import type { DelegateManifest, RunSnapshot } from "./types.js";
+import type { DelegateManifest, RunSnapshot, SubAgentStatus } from "./types.js";
 
 const RUN_ENTRY = "facets-run";
 const POLL_MS = 400;
@@ -105,9 +107,12 @@ export class MainRunManager {
 	}
 
 	private findRun(runId: string): RunSnapshot {
-		const run = this.runs.get(runId) ?? [...this.runs.values()].find((candidate) => candidate.runId.startsWith(runId));
-		if (!run) throw new Error(`Unknown Sub '${runId}'.`);
-		return run;
+		const exact = this.runs.get(runId);
+		if (exact) return exact;
+		const matches = [...this.runs.values()].filter((candidate) => candidate.runId.startsWith(runId));
+		if (matches.length > 1) throw new Error(`Ambiguous Sub prefix '${runId}'. Use a longer run ID.`);
+		if (!matches[0]) throw new Error(`Unknown Sub '${runId}'.`);
+		return matches[0];
 	}
 
 	async delegate(input: {
@@ -188,13 +193,29 @@ export class MainRunManager {
 		return { run, messageId: sent.id };
 	}
 
-	async subs(): Promise<{
-		open: RunSnapshot[];
+	async subs(all = false): Promise<{
+		open: Array<{ run: RunSnapshot; status: SubAgentStatus }>;
 		resumable: Awaited<ReturnType<typeof listResumableSubSessions>>;
 	}> {
-		const open = [...this.runs.values()];
-		const activeSessionIds = new Set(open.flatMap((run) => run.subSessionId ? [run.subSessionId] : []));
-		return { open, resumable: await listResumableSubSessions(activeSessionIds) };
+		const runs = [...this.runs.values()];
+		const activeSessionIds = new Set(runs.flatMap((run) => run.subSessionId ? [run.subSessionId] : []));
+		const [open, resumable] = await Promise.all([
+			Promise.all(runs.map(async (run) => ({ run, status: await this.adapters.status(run.surface) }))),
+			listResumableSubSessions(activeSessionIds),
+		]);
+		return {
+			open: all ? open : open.filter(({ run, status }) => run.sessionPersistence === "persistent" || status === "working" || status === "blocked"),
+			resumable,
+		};
+	}
+
+	interrupt(runId: string): RunSnapshot {
+		const run = this.findRun(runId);
+		const manifest = readManifest(run.channelDir);
+		const turn = readActiveTurn(run.channelDir, manifest);
+		if (!turn) throw new Error(`Sub '${run.title}' has no active turn to interrupt.`);
+		writeInterrupt(run.channelDir, manifest, turn);
+		return run;
 	}
 
 	async close(runId: string, reason: string): Promise<RunSnapshot> {

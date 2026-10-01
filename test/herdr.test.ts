@@ -30,6 +30,31 @@ const spec: SubLaunchSpec = {
 	},
 };
 
+test("reads live agent status by pane and does not guess on errors or mismatches", async () => {
+	let stdout = JSON.stringify({ result: { agent: { pane_id: "w1:p2", tab_id: "w1:t2", agent_status: "working" } } });
+	let code = 0;
+	const calls: string[][] = [];
+	const pi = { exec: async (_command: string, args: string[]) => {
+		calls.push(args);
+		return { code, stdout, stderr: "", killed: false };
+	} } as unknown as ExtensionAPI;
+	const adapter = new HerdrTabAdapter(pi);
+	const handle = { adapter: "herdr" as const, paneId: "w1:p2", tabId: "w1:t2" };
+	assert.equal(await adapter.status(handle), "working");
+	assert.deepEqual(calls, [["agent", "get", "w1:p2"]]);
+	for (const status of ["idle", "blocked"] as const) {
+		stdout = JSON.stringify({ result: { agent: { pane_id: "w1:p2", tab_id: "w1:t2", agent_status: status } } });
+		assert.equal(await adapter.status(handle), status);
+	}
+	stdout = JSON.stringify({ result: { agent: { pane_id: "w1:p3", tab_id: "w1:t2", agent_status: "working" } } });
+	assert.equal(await adapter.status(handle), "unknown");
+	stdout = "not json";
+	assert.equal(await adapter.status(handle), "unknown");
+	code = 1;
+	assert.equal(await adapter.status(handle), "unknown");
+	assert.equal(await adapter.status(undefined), "unknown");
+});
+
 test("starts an idle Pi before submitting work through herdr agent prompt", async () => {
 	const previousEnvironment = process.env.HERDR_ENV;
 	const previousWorkspace = process.env.HERDR_WORKSPACE_ID;

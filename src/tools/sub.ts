@@ -4,16 +4,21 @@ import { Type } from "typebox";
 import {
 	listTalkToSub,
 	MESSAGE_TYPE,
+	clearActiveTurn,
+	clearInterrupt,
+	readActiveTurn,
+	readInterrupt,
 	readClose,
 	readManifest,
 	removeTalk,
 	talkToMain,
 	writeSubClosed,
 	writeSubSessionInfo,
+	writeActiveTurn,
 } from "../channel.js";
 import { buildSubSystemPrompt } from "../profiles/system-prompt.js";
 import { talkView } from "../talk-render.js";
-import type { DelegateManifest } from "../types.js";
+import type { ActiveTurn, DelegateManifest } from "../types.js";
 
 const channelDir = process.env.PI_FACETS_CHANNEL;
 const envToken = process.env.PI_FACETS_TOKEN;
@@ -37,6 +42,7 @@ function loadManifest(): { channelDir: string; manifest: DelegateManifest } {
 export function registerSub(pi: ExtensionAPI): void {
 	const loaded = loadManifest();
 	let delivering = false;
+	let activeTurn: ActiveTurn | undefined;
 	let protocolPoller: ReturnType<typeof setInterval> | undefined;
 
 	pi.on("session_start", (_event, ctx) => {
@@ -50,11 +56,19 @@ export function registerSub(pi: ExtensionAPI): void {
 				sessionFile,
 			});
 		}
+		const previousTurn = readActiveTurn(loaded.channelDir, loaded.manifest);
+		if (ctx.isIdle() && previousTurn) clearActiveTurn(loaded.channelDir, previousTurn);
+		activeTurn = ctx.isIdle() ? undefined : previousTurn;
 		protocolPoller = setInterval(() => {
 			if (readClose(loaded.channelDir, loaded.manifest)) {
 				ctx.abort();
 				ctx.shutdown();
 				return;
+			}
+			const interrupt = readInterrupt(loaded.channelDir, loaded.manifest);
+			if (interrupt) {
+				clearInterrupt(loaded.channelDir);
+				if (!ctx.isIdle() && interrupt.turnId === activeTurn?.turnId) ctx.abort();
 			}
 			if (delivering || !ctx.isIdle()) return;
 			const message = listTalkToSub(loaded.channelDir, loaded.manifest)[0];
@@ -80,6 +94,17 @@ export function registerSub(pi: ExtensionAPI): void {
 			}
 		}, 400);
 		protocolPoller.unref?.();
+	});
+
+	pi.on("agent_start", () => {
+		activeTurn = writeActiveTurn(loaded.channelDir, loaded.manifest);
+	});
+
+	pi.on("agent_settled", (_event, ctx) => {
+		if (ctx.isIdle() && activeTurn) {
+			clearActiveTurn(loaded.channelDir, activeTurn);
+			activeTurn = undefined;
+		}
 	});
 
 	pi.on("before_agent_start", (event) => {

@@ -30,6 +30,18 @@ export interface SubSessionInfo {
 	createdAt: number;
 }
 
+export interface ActiveTurn {
+	version: 1;
+	runId: string;
+	token: string;
+	turnId: string;
+	createdAt: number;
+}
+
+export interface InterruptRequest extends ActiveTurn {
+	requestedAt: number;
+}
+
 export interface CloseMessage {
 	version: 1;
 	runId: string;
@@ -45,6 +57,8 @@ export interface SubClosedMessage {
 	createdAt: number;
 	reason: string;
 }
+
+export type SubAgentStatus = "working" | "blocked" | "idle" | "unknown";
 
 export interface SurfaceHandle {
 	adapter: "herdr";

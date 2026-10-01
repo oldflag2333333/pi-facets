@@ -4,7 +4,7 @@ A Pi extension for reusable capability profiles and delegating self-contained wo
 
 The Main and Sub communicate through a deliberately narrow protocol:
 
-- Main → Sub: messages through `talk`, plus explicit closure
+- Main → Sub: messages through `talk`, cancellation of the active turn through `interrupt_sub`, plus explicit closure
 - Sub → Main: messages through `talk`
 - never exposed by the extension: transcript, thinking blocks, tool history, or session files
 
@@ -67,7 +67,7 @@ When `SYSTEM.md` is present, it is the complete handwritten system prompt for th
 
 `thinkingLevel` is passed to Pi rather than constrained by a Facets-owned enum. `sessionPersistence` is `ephemeral` by default or `persistent`: ephemeral conversations remain in memory only, while persistent conversations are saved by Pi and can later be resumed through `delegate.resumeSessionId`. Both remain open until the Main calls `close_sub` or the user closes the Herdr tab. Skill entries may be standard skill names or paths relative to the profile file. Named project skills are also resolved from the Main Pi working directory and its ancestors; explicit skill paths remain relative to the profile file. Selecting a skill in a profile is an explicit capability choice, so Facets makes it model-visible even when its source declares `disable-model-invocation: true`; the source is not modified, and relative skill assets remain available through a private runtime mirror. Valid profile names, scope, and descriptions are injected into the Main Pi system context only as a capability catalog, so it can select a profile without calling a discovery tool; Main routing policy belongs in `MAIN.md`. Users can still run `/profiles` for diagnostics; profiles cannot be switched inside a running session.
 
-Starting Pi without `--profile` preserves Pi's existing model, thinking, tools, and skills. A selected profile replaces the active tool list exactly; include `delegate`, `talk`, `close_sub`, and `list_sub` in an orchestrator profile when those controls should remain available. To opt into a startup profile:
+Starting Pi without `--profile` preserves Pi's existing model, thinking, tools, and skills. A selected profile replaces the active tool list exactly; include `delegate`, `talk`, `interrupt_sub`, `close_sub`, and `list_sub` in an orchestrator profile when those controls should remain available. To opt into a startup profile:
 
 ```bash
 pi --profile reviewer
@@ -83,8 +83,9 @@ For delegated Subs, Facets resolves every non-built-in profile tool through Pi's
 
 - `delegate` — launch a fresh Sub or resume a persistent Sub session by session ID
 - `talk` — send one message to an existing Sub
+- `interrupt_sub` — request cancellation of the current Sub turn without closing its session or tab. Requests are tied to the active turn, so a late request cannot cancel subsequent work. Pi's cancellation is cooperative; a tool that ignores abort may continue running.
 - `close_sub` — stop active work if needed and close the Sub session
-- `list_sub` — render `subs`, combining current open Sub sessions with closed persistent sessions that can be resumed
+- `list_sub` — render `subs` with Herdr's live `working`/`blocked`/`idle` status for open Subs and `closed · resumable` for saved sessions. By default, show working or blocked Subs and all persistent Subs (including idle open and closed resumable sessions); use `all: true` to include idle or unknown ephemeral Subs. Status is `unknown` if Herdr cannot report it.
 
 ### Sub Pi
 

@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { subCapabilityArgs } from "../profiles/launch-args.js";
-import type { SubLaunchSpec, SubSurfaceAdapter, SurfaceHandle } from "../types.js";
+import type { SubAgentStatus, SubLaunchSpec, SubSurfaceAdapter, SurfaceHandle } from "../types.js";
 
 function parseEnvelope(stdout: string): Record<string, unknown> {
 	const lines = stdout.trim().split(/\r?\n/).filter(Boolean).reverse();
@@ -112,6 +112,22 @@ export class HerdrTabAdapter implements SubSurfaceAdapter {
 			throw new Error(prompted.stderr || "Failed to submit the delegated task to the Herdr agent.");
 		}
 		return { adapter: "herdr", tabId, paneId };
+	}
+
+	async status(handle: SurfaceHandle | undefined): Promise<SubAgentStatus> {
+		if (!handle?.paneId) return "unknown";
+		try {
+			const response = await this.pi.exec("herdr", ["agent", "get", handle.paneId], { timeout: 3000 });
+			if (response.code !== 0) return "unknown";
+			const agent = parseEnvelope(response.stdout).agent;
+			if (!agent || typeof agent !== "object") return "unknown";
+			const info = agent as Record<string, unknown>;
+			if (info.pane_id !== handle.paneId || (handle.tabId && info.tab_id !== handle.tabId)) return "unknown";
+			return info.agent_status === "working" || info.agent_status === "blocked" || info.agent_status === "idle"
+				? info.agent_status : "unknown";
+		} catch {
+			return "unknown";
+		}
 	}
 
 	async close(handle: SurfaceHandle): Promise<void> {

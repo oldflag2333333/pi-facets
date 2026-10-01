@@ -7,6 +7,8 @@ import type {
 	SubSessionInfo,
 	CloseMessage,
 	DelegateManifest,
+	ActiveTurn,
+	InterruptRequest,
 	TalkMessage,
 } from "./types.js";
 
@@ -170,6 +172,52 @@ export function readSubSessionInfo(channelDir: string, manifest: DelegateManifes
 	if (!value || value.version !== 1 || value.runId !== manifest.runId || value.token !== manifest.token
 		|| typeof value.sessionId !== "string" || typeof value.sessionFile !== "string" || typeof value.createdAt !== "number") return undefined;
 	return value as unknown as SubSessionInfo;
+}
+
+export function writeActiveTurn(channelDir: string, manifest: DelegateManifest): ActiveTurn {
+	const turn: ActiveTurn = {
+		version: 1,
+		runId: manifest.runId,
+		token: manifest.token,
+		turnId: randomUUID(),
+		createdAt: Date.now(),
+	};
+	writeAtomicJson(path.join(channelDir, "active-turn.json"), turn);
+	return turn;
+}
+
+export function readActiveTurn(channelDir: string, manifest: Pick<DelegateManifest, "runId" | "token">): ActiveTurn | undefined {
+	const value = record(readJson(path.join(channelDir, "active-turn.json")));
+	if (!value || value.version !== 1 || value.runId !== manifest.runId || value.token !== manifest.token
+		|| typeof value.turnId !== "string" || typeof value.createdAt !== "number") return undefined;
+	return value as unknown as ActiveTurn;
+}
+
+export function clearActiveTurn(channelDir: string, turn: ActiveTurn): void {
+	// An older settle event must not erase a newer turn.
+	try {
+		if (readActiveTurn(channelDir, turn)?.turnId === turn.turnId) {
+			fs.rmSync(path.join(channelDir, "active-turn.json"), { force: true });
+		}
+	} catch {}
+}
+
+export function writeInterrupt(channelDir: string, manifest: DelegateManifest, turn: ActiveTurn): InterruptRequest {
+	const request: InterruptRequest = { ...turn, requestedAt: Date.now() };
+	writeAtomicJson(path.join(channelDir, "interrupt.json"), request);
+	return request;
+}
+
+export function readInterrupt(channelDir: string, manifest: DelegateManifest): InterruptRequest | undefined {
+	const value = record(readJson(path.join(channelDir, "interrupt.json")));
+	if (!value || value.version !== 1 || value.runId !== manifest.runId || value.token !== manifest.token
+		|| typeof value.turnId !== "string" || typeof value.createdAt !== "number"
+		|| typeof value.requestedAt !== "number") return undefined;
+	return value as unknown as InterruptRequest;
+}
+
+export function clearInterrupt(channelDir: string): void {
+	fs.rmSync(path.join(channelDir, "interrupt.json"), { force: true });
 }
 
 export function writeClose(channelDir: string, manifest: DelegateManifest, reason: string): void {

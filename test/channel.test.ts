@@ -5,12 +5,16 @@ import * as path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import {
 	createChannel,
+	clearActiveTurn,
+	clearInterrupt,
 	listTalkToSub,
 	listTalkToMain,
 	readSubClosed,
 	readSubSessionInfo,
 	readClose,
 	readManifest,
+	readActiveTurn,
+	readInterrupt,
 	removeChannel,
 	removeTalk,
 	talkToSub,
@@ -18,6 +22,8 @@ import {
 	writeSubClosed,
 	writeSubSessionInfo,
 	writeClose,
+	writeActiveTurn,
+	writeInterrupt,
 } from "../src/channel.js";
 
 const profile = {
@@ -101,6 +107,23 @@ test("round-trips persistent Sub session identity", () => {
 		sessionFile: "/tmp/sub.jsonl",
 	});
 	assert.deepEqual(readSubSessionInfo(created.channelDir, manifest), info);
+});
+
+test("binds an interrupt to one authenticated active turn", () => {
+	const created = channel();
+	const manifest = readManifest(created.channelDir);
+	const turn = writeActiveTurn(created.channelDir, manifest);
+	assert.deepEqual(readActiveTurn(created.channelDir, manifest), turn);
+	const request = writeInterrupt(created.channelDir, manifest, turn);
+	assert.deepEqual(readInterrupt(created.channelDir, manifest), request);
+	assert.equal(readInterrupt(created.channelDir, { ...manifest, token: "wrong" }), undefined);
+	const nextTurn = writeActiveTurn(created.channelDir, manifest);
+	clearActiveTurn(created.channelDir, turn);
+	assert.deepEqual(readActiveTurn(created.channelDir, manifest), nextTurn);
+	clearInterrupt(created.channelDir);
+	assert.equal(readInterrupt(created.channelDir, manifest), undefined);
+	clearActiveTurn(created.channelDir, nextTurn);
+	assert.equal(readActiveTurn(created.channelDir, manifest), undefined);
 });
 
 test("round-trips Main close and manual Sub closure", () => {

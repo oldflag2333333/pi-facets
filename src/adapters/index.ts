@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { HerdrTabAdapter } from "./herdr.js";
-import type { SurfaceHandle } from "../types.js";
+import type { SubAgentStatus, SurfaceHandle } from "../types.js";
 
 export class AdapterRegistry {
 	private readonly herdr: HerdrTabAdapter;
@@ -14,6 +14,10 @@ export class AdapterRegistry {
 			throw new Error("Facets requires Herdr, but the Herdr adapter is unavailable.");
 		}
 		return this.herdr;
+	}
+
+	async status(handle: SurfaceHandle | undefined): Promise<SubAgentStatus> {
+		return this.herdr.status(handle);
 	}
 
 	async close(handle: SurfaceHandle | undefined): Promise<void> {

@@ -6,6 +6,7 @@ import { resolveProfile } from "../profiles/loader.js";
 import { resolveToolExtensions } from "../profiles/tool-sources.js";
 import type { MainRunManager } from "../run-manager.js";
 import { talkView } from "../talk-render.js";
+import type { SubAgentStatus } from "../types.js";
 
 const MAX_OPEN_SUBS = 4;
 
@@ -56,7 +57,7 @@ export function registerMainTools(pi: ExtensionAPI, manager: MainRunManager): vo
 		promptGuidelines: [
 			"Use delegate for work assigned by MAIN.md or a separable task that benefits from an independent context; select an explicitly configured profile and provide a short informative title.",
 			"After delegate launches, do not wait or repeatedly poll. Facets will wake the Main when the Sub uses talk.",
-			"Use talk to respond to an existing Sub or give it more work, and use close_sub only after its delivery is accepted or the user asks to close it.",
+			"Use talk to respond to an existing Sub, interrupt_sub to stop its current turn without closing it, and close_sub only after its delivery is accepted or the user asks to close it.",
 		],
 		parameters: Type.Object({
 			title: Type.String({ description: "Short Herdr tab title, up to 48 displayed characters." }),
@@ -156,6 +157,28 @@ export function registerMainTools(pi: ExtensionAPI, manager: MainRunManager): vo
 	});
 
 	pi.registerTool({
+		name: "interrupt_sub",
+		label: "interrupt sub",
+		description: "Request cancellation of an open Sub's current turn, including a running tool call, without closing its session or Herdr tab. If the tool ignores cancellation, the Sub may remain busy; use close_sub only if closure is intended.",
+		parameters: Type.Object({
+			runId: Type.String({ description: "Full Sub run ID or a unique prefix." }),
+		}),
+		renderCall(args, theme, context) {
+			const state = context.state as { title?: string };
+			state.title ??= findSubTitle(manager, args.runId);
+			return new Text(`${theme.fg("toolTitle", theme.bold("interrupt"))} ${theme.fg("muted", `· ${state.title ?? "sub"}`)}`, 0, 0);
+		},
+		async execute(_id, params) {
+			const run = manager.interrupt(params.runId);
+			return { content: [{ type: "text", text: `Requested interruption of Sub: ${run.title}. The Sub session remains open.` }], details: { runId: run.runId } };
+		},
+		renderResult(_result, _options, theme, context) {
+			if (context.isError) return new Text(theme.fg("error", "\ninterrupt failed"), 0, 0);
+			return new Container();
+		},
+	});
+
+	pi.registerTool({
 		name: "close_sub",
 		label: "close sub",
 		description: "Close a Sub Pi session and its Herdr tab. Use after the delivery is accepted or when the user asks to close it.",
@@ -181,17 +204,20 @@ export function registerMainTools(pi: ExtensionAPI, manager: MainRunManager): vo
 	pi.registerTool({
 		name: "list_sub",
 		label: "subs",
-		description: "List current open Sub sessions together with closed persistent Sub sessions that can be resumed. Never returns transcripts.",
-		parameters: Type.Object({}),
-		async execute() {
+		description: "List working or blocked Subs and persistent Sub sessions by default, including closed sessions that can be resumed. Set all=true to include idle or unknown ephemeral Subs. Shows live Herdr status; never returns transcripts.",
+		parameters: Type.Object({
+			all: Type.Optional(Type.Boolean({ description: "Include idle and unknown ephemeral Subs too (default: false)." })),
+		}),
+		async execute(_id, params) {
 			const now = Date.now();
-			const listed = await manager.subs();
-			const open = listed.open.map((run) => ({
+			const listed = await manager.subs(params.all ?? false);
+			const open = listed.open.map(({ run, status }) => ({
 				runId: run.runId,
 				subSessionId: run.subSessionId,
 				title: run.title,
 				profile: run.profileName,
 				sessionPersistence: run.sessionPersistence,
+				status,
 				adapter: run.surface?.adapter,
 				elapsedSeconds: Math.max(0, Math.round((now - run.createdAt) / 1000)),
 			}));
@@ -200,8 +226,8 @@ export function registerMainTools(pi: ExtensionAPI, manager: MainRunManager): vo
 				modifiedSecondsAgo: Math.max(0, Math.round((now - session.modifiedAt) / 1000)),
 			}));
 			const lines = [
-				...open.map((run) => `- open ${run.runId.slice(0, 8)} ${run.title} <${run.profile}, ${run.sessionPersistence}>`),
-				...resumable.map((session) => `- resumable ${session.sessionId} ${session.title} <persistent> cwd=${session.cwd}`),
+				...open.map((run) => `- ${run.status} ${run.runId.slice(0, 8)} ${run.title} <${run.profile}, ${run.sessionPersistence}>`),
+				...resumable.map((session) => `- closed ${session.sessionId} ${session.title} <persistent, resumable> cwd=${session.cwd}`),
 			];
 			return { content: [{ type: "text", text: lines.join("\n") || "no Sub sessions." }], details: { open, resumable } };
 		},
@@ -216,6 +242,7 @@ export function registerMainTools(pi: ExtensionAPI, manager: MainRunManager): vo
 					title: string;
 					profile: string;
 					sessionPersistence: string;
+					status: SubAgentStatus;
 					adapter?: string;
 					elapsedSeconds: number;
 				}>;
@@ -236,6 +263,7 @@ export function registerMainTools(pi: ExtensionAPI, manager: MainRunManager): vo
 						run.subSessionId?.slice(0, 8),
 						run.profile,
 						run.sessionPersistence,
+						run.status,
 						run.adapter,
 						formatElapsed(run.elapsedSeconds),
 					].filter(Boolean).join(" · ");
@@ -245,6 +273,7 @@ export function registerMainTools(pi: ExtensionAPI, manager: MainRunManager): vo
 					const metadata = [
 						session.sessionId.slice(0, 8),
 						"persistent",
+						"closed · resumable",
 						path.basename(session.cwd),
 						formatElapsed(session.modifiedSecondsAgo),
 					].join(" · ");
