@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { HerdrTabAdapter } from "../src/adapters/herdr.js";
+import { HerdrLaunchCleanupError, HerdrTabAdapter } from "../src/adapters/herdr.js";
 import type { SubLaunchSpec } from "../src/types.js";
 
 const spec: SubLaunchSpec = {
@@ -53,6 +53,94 @@ test("reads live agent status by pane and does not guess on errors or mismatches
 	code = 1;
 	assert.equal(await adapter.status(handle), "unknown");
 	assert.equal(await adapter.status(undefined), "unknown");
+});
+
+test("rolls back every post-creation failure without reusing the cancelled signal", async (t) => {
+	const previous = process.env.HERDR_WORKSPACE_ID;
+	process.env.HERDR_WORKSPACE_ID = "w1";
+	try {
+		for (const stage of ["start", "report-metadata", "prompt"]) {
+			for (const failure of ["exit", "throw", "killed", "abort"]) {
+				await t.test(`${stage}: ${failure}`, async () => {
+					const calls: Array<{ args: string[]; signal?: AbortSignal }> = [];
+					const controller = new AbortController();
+					const pi = { exec: async (_command: string, args: string[], options: { signal?: AbortSignal }) => {
+						calls.push({ args, signal: options.signal });
+						if (args[1] === "create") return { code: 0, stdout: JSON.stringify({ tab: { tab_id: "tab" }, root_pane: { pane_id: "pane" } }), stderr: "", killed: false };
+						if (args[1] === stage) {
+							if (failure === "throw") throw new Error("Process failed");
+							if (failure === "abort") controller.abort(new Error("Cancelled"));
+							return { code: failure === "exit" ? 1 : 0, stdout: "{}", stderr: failure === "abort" ? "" : "Process failed", killed: failure === "killed" };
+						}
+						return { code: 0, stdout: "{}", stderr: "", killed: false };
+					} } as unknown as ExtensionAPI;
+					await assert.rejects(() => new HerdrTabAdapter(pi).launch(spec, controller.signal), /Process failed|Cancelled/);
+					assert.deepEqual(calls.at(-1), { args: ["tab", "close", "tab"], signal: undefined });
+					assert.equal(calls.filter((call) => call.args[1] === "close").length, 1);
+				});
+			}
+		}
+	} finally {
+		if (previous === undefined) delete process.env.HERDR_WORKSPACE_ID;
+		else process.env.HERDR_WORKSPACE_ID = previous;
+	}
+});
+
+test("handles cancellation during creation, missing pane IDs, and failed creation with a recoverable tab ID", async () => {
+	const previous = process.env.HERDR_WORKSPACE_ID;
+	process.env.HERDR_WORKSPACE_ID = "w1";
+	try {
+		for (const mode of ["cancel", "missing-pane", "failed-create"]) {
+			const controller = new AbortController();
+			const calls: string[][] = [];
+			const pi = { exec: async (_command: string, args: string[]) => {
+				calls.push(args);
+				if (args[1] === "create") {
+					if (mode === "cancel") controller.abort(new Error("Cancelled during creation"));
+					return { code: mode === "failed-create" ? 1 : 0, stdout: JSON.stringify({ tab: { tab_id: "tab" }, ...(mode === "missing-pane" ? {} : { root_pane: { pane_id: "pane" } }) }), stderr: "", killed: false };
+				}
+				return { code: 0, stdout: "{}", stderr: "", killed: false };
+			} } as unknown as ExtensionAPI;
+			await assert.rejects(() => new HerdrTabAdapter(pi).launch(spec, controller.signal));
+			assert.deepEqual(calls, [calls[0], ["tab", "close", "tab"]]);
+		}
+		const controller = new AbortController();
+		controller.abort();
+		let called = false;
+		const pi = { exec: async () => { called = true; throw new Error("Must not create a tab"); } } as unknown as ExtensionAPI;
+		await assert.rejects(() => new HerdrTabAdapter(pi).launch(spec, controller.signal));
+		assert.equal(called, false);
+	} finally {
+		if (previous === undefined) delete process.env.HERDR_WORKSPACE_ID;
+		else process.env.HERDR_WORKSPACE_ID = previous;
+	}
+});
+
+test("returns a recovery handle when both launch and rollback fail", async () => {
+	const previous = process.env.HERDR_WORKSPACE_ID;
+	process.env.HERDR_WORKSPACE_ID = "w1";
+	const pi = { exec: async (_command: string, args: string[]) => {
+		if (args[1] === "create") return { code: 0, stdout: JSON.stringify({ tab: { tab_id: "tab" }, root_pane: { pane_id: "pane" } }), stderr: "", killed: false };
+		return { code: 1, stdout: "", stderr: args[1] === "close" ? "Close failed" : "Launch failed", killed: false };
+	} } as unknown as ExtensionAPI;
+	try {
+		await assert.rejects(() => new HerdrTabAdapter(pi).launch(spec), (error: unknown) => {
+			assert.ok(error instanceof HerdrLaunchCleanupError);
+			assert.deepEqual(error.handle, { adapter: "herdr", tabId: "tab", paneId: "pane" });
+			assert.match(error.message, /Launch failed.*Close failed/);
+			return true;
+		});
+	} finally {
+		if (previous === undefined) delete process.env.HERDR_WORKSPACE_ID;
+		else process.env.HERDR_WORKSPACE_ID = previous;
+	}
+});
+
+test("close reports command failure instead of claiming success", async () => {
+	for (const failure of [{ code: 1, killed: false }, { code: 0, killed: true }]) {
+		const pi = { exec: async () => ({ ...failure, stdout: "", stderr: "Close failed" }) } as unknown as ExtensionAPI;
+		await assert.rejects(() => new HerdrTabAdapter(pi).close({ adapter: "herdr", tabId: "tab" }), /Close failed/);
+	}
 });
 
 test("starts an idle Pi before submitting work through herdr agent prompt", async () => {

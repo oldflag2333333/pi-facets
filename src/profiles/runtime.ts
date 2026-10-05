@@ -2,7 +2,8 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { buildProfilesContext } from "./context.js";
 import { loadProfiles, resolveProfile } from "./loader.js";
-import { buildStartupSystemPrompt } from "./system-prompt.js";
+import { applyStartupPromptSections, bindPromptSections } from "./system-prompt.js";
+import { applyProfileTools, ProfileToolPolicy } from "./tool-policy.js";
 import type { ResolvedProfile } from "./types.js";
 
 export class StartupProfileRuntime {
@@ -12,11 +13,8 @@ export class StartupProfileRuntime {
 
 	constructor(private readonly pi: ExtensionAPI) {}
 
-	hasSystemPromptOverride(): boolean {
-		return this.active?.systemPrompt !== undefined;
-	}
-
 	register(): void {
+		const toolPolicy = new ProfileToolPolicy(this.pi);
 		this.pi.registerFlag("profile", {
 			description: "Facets profile name to apply at process startup",
 			type: "string",
@@ -28,17 +26,21 @@ export class StartupProfileRuntime {
 			if (typeof selected !== "string" || !selected.trim()) {
 				this.active = undefined;
 				this.startupError = undefined;
+				toolPolicy.clear();
 				ctx.ui.setStatus("facets-profile", undefined);
 				return;
 			}
+			toolPolicy.denyAll(`Facets profile '${selected.trim()}' has not initialized successfully.`);
 			try {
 				this.active = resolveProfile(selected.trim(), ctx.cwd, ctx.isProjectTrusted());
 				await this.apply(this.active, ctx);
+				toolPolicy.allow(this.active.name, this.active.tools);
 				this.startupError = undefined;
 				ctx.ui.setStatus("facets-profile", `profile:${this.active.name}`);
 			} catch (error) {
 				this.active = undefined;
 				this.startupError = error instanceof Error ? error.message : String(error);
+				toolPolicy.denyAll(`Cannot execute tools: ${this.startupError}`);
 				ctx.ui.notify(this.startupError, "error");
 				if (!ctx.hasUI) console.error(`Facets profile error: ${this.startupError}`);
 			}
@@ -55,9 +57,10 @@ export class StartupProfileRuntime {
 			return { skillPaths: this.active.resolvedSkills };
 		});
 
-		this.pi.on("before_agent_start", (event) => {
-			const systemPrompt = buildStartupSystemPrompt(event.systemPrompt, this.active, this.profilesContext);
-			return systemPrompt === undefined ? undefined : { systemPrompt };
+		bindPromptSections(this.pi, ["facets_profiles", "facets_profile"], () => {
+			const sections: Record<string, string> = {};
+			applyStartupPromptSections(sections, this.active, this.profilesContext);
+			return sections;
 		});
 
 		this.pi.registerCommand("profiles", {
@@ -91,7 +94,7 @@ export class StartupProfileRuntime {
 			if (!(await this.pi.setModel(model))) throw new Error(`Profile '${profile.name}' model '${profile.model}' has no usable credentials.`);
 		}
 
-		this.pi.setActiveTools(profile.tools);
+		applyProfileTools(this.pi, profile.name, profile.tools);
 		if (profile.thinkingLevel) {
 			this.pi.setThinkingLevel(profile.thinkingLevel as ThinkingLevel);
 			const effective = this.pi.getThinkingLevel();

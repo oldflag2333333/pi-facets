@@ -20,10 +20,9 @@ function writeJson(file: string, value: unknown): void {
 	fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-function writeDirectoryProfile(rootDir: string, name: string, value: unknown, systemPrompt?: string): string {
+function writeDirectoryProfile(rootDir: string, name: string, value: unknown): string {
 	const profileDir = path.join(rootDir, name);
 	writeJson(path.join(profileDir, "config.json"), value);
-	if (systemPrompt !== undefined) fs.writeFileSync(path.join(profileDir, "SYSTEM.md"), systemPrompt);
 	return profileDir;
 }
 
@@ -58,39 +57,12 @@ test("loads global profiles without applying an internal thinking-level enum", (
 	assert.equal(catalog.profiles.get("reviewer")?.thinkingLevel, "provider-defined-level");
 });
 
-test("loads directory profiles with an optional handwritten system prompt", () => {
+test("loads directory profiles with additive instructions", () => {
 	const profileDir = writeDirectoryProfile(globalProfilesDir(), "reviewer", {
-		version: 1,
-		name: "reviewer",
-		tools: ["read"],
-		instructions: "Ignored when SYSTEM.md exists.",
-	}, "You are a handwritten reviewer.\n");
-	const profile = loadProfiles(cwd, false).profiles.get("reviewer");
-	assert.equal(profile?.sourcePath, path.join(profileDir, "config.json"));
-	assert.equal(profile?.systemPrompt, "You are a handwritten reviewer.\n");
-});
-
-test("rejects an empty directory profile SYSTEM.md", () => {
-	writeDirectoryProfile(globalProfilesDir(), "reviewer", {
-		version: 1,
-		name: "reviewer",
-		tools: ["read"],
-	}, "\n\t\n");
-	const catalog = loadProfiles(cwd, false);
-	assert.equal(catalog.profiles.has("reviewer"), false);
-	assert.equal(path.basename(catalog.diagnostics[0]?.path ?? ""), "SYSTEM.md");
-	assert.match(catalog.diagnostics[0]?.message ?? "", /must not be empty/);
-});
-
-test("uses Pi's normal prompt path when a directory profile has no SYSTEM.md", () => {
-	writeDirectoryProfile(globalProfilesDir(), "reviewer", {
-		version: 1,
-		name: "reviewer",
-		tools: ["read"],
-		instructions: "Append these instructions.",
+		version: 1, name: "reviewer", tools: ["read"], instructions: "Append these instructions.",
 	});
 	const profile = loadProfiles(cwd, false).profiles.get("reviewer");
-	assert.equal(profile?.systemPrompt, undefined);
+	assert.equal(profile?.sourcePath, path.join(profileDir, "config.json"));
 	assert.equal(profile?.instructions, "Append these instructions.");
 });
 
@@ -214,6 +186,34 @@ test("resolves skill names from ancestor project directories", () => {
 	});
 
 	assert.deepEqual(resolveProfile("reviewer", nestedCwd, true).resolvedSkills, [skill]);
+});
+
+test("does not discover named skills in untrusted projects or ancestors", () => {
+	const nestedCwd = path.join(cwd, "workspace");
+	fs.mkdirSync(nestedCwd);
+	writeJson(path.join(globalProfilesDir(), "reviewer.json"), {
+		version: 1, name: "reviewer", tools: ["read"], skills: ["facets-test-project-only"],
+	});
+	for (const location of [".pi", ".agents"]) {
+		const skill = path.join(cwd, location, "skills", "facets-test-project-only", "SKILL.md");
+		fs.mkdirSync(path.dirname(skill), { recursive: true });
+		fs.writeFileSync(skill, "---\nname: facets-test-project-only\ndescription: Project only\n---\n");
+		assert.throws(() => resolveProfile("reviewer", nestedCwd, false), /unknown skill/);
+		assert.ok(resolveProfile("reviewer", nestedCwd, true).resolvedSkills.includes(skill));
+		fs.rmSync(path.dirname(skill), { recursive: true });
+	}
+});
+
+test("retains user-selected explicit skill paths without project discovery", () => {
+	const skill = path.join(cwd, ".pi", "skills", "explicit", "SKILL.md");
+	fs.mkdirSync(path.dirname(skill), { recursive: true });
+	fs.writeFileSync(skill, "---\nname: explicit\ndescription: Explicit choice\n---\n");
+	for (const reference of [skill, path.relative(globalProfilesDir(), skill)]) {
+		writeJson(path.join(globalProfilesDir(), "reviewer.json"), {
+			version: 1, name: "reviewer", tools: ["read"], skills: [reference],
+		});
+		assert.deepEqual(resolveProfile("reviewer", cwd, false).resolvedSkills, [skill]);
+	}
 });
 
 test("reports invalid profiles and does not load them", () => {

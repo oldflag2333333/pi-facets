@@ -46,6 +46,13 @@ function subArgs(spec: SubLaunchSpec): string[] {
 	];
 }
 
+/** A launch failed and its tab could not be rolled back; keep it addressable. */
+export class HerdrLaunchCleanupError extends Error {
+	constructor(readonly handle: SurfaceHandle, cause: unknown, cleanup: unknown) {
+		super(`Sub launch failed: ${cause instanceof Error ? cause.message : String(cause)}. Tab cleanup also failed: ${cleanup instanceof Error ? cleanup.message : String(cleanup)}.`, { cause });
+	}
+}
+
 export class HerdrTabAdapter implements SubSurfaceAdapter {
 	readonly id = "herdr" as const;
 	constructor(private readonly pi: ExtensionAPI) {}
@@ -59,6 +66,7 @@ export class HerdrTabAdapter implements SubSurfaceAdapter {
 	async launch(spec: SubLaunchSpec, signal?: AbortSignal): Promise<SurfaceHandle> {
 		const workspaceId = process.env.HERDR_WORKSPACE_ID;
 		if (!workspaceId) throw new Error("HERDR_WORKSPACE_ID is unavailable; Pi is not running in a Herdr workspace.");
+		signal?.throwIfAborted();
 		const label = `↳ pi · ${safeLabel(spec.title)}`;
 		const created = await this.pi.exec("herdr", [
 			"tab", "create",
@@ -70,48 +78,44 @@ export class HerdrTabAdapter implements SubSurfaceAdapter {
 			"--env", `PI_FACETS_TOKEN=${spec.token}`,
 			"--no-focus",
 		], { timeout: 15_000, signal });
-		if (created.code !== 0) throw new Error(created.stderr || "Failed to create Herdr tab.");
-		const payload = parseEnvelope(created.stdout);
+		let payload: Record<string, unknown>;
+		try { payload = parseEnvelope(created.stdout); } catch (error) {
+			if (created.code !== 0 || created.killed) throw new Error(created.stderr || "Failed to create Herdr tab.");
+			throw error;
+		}
 		const tabId = nestedString(payload, "tab", "tab_id") ?? nestedString(payload, "tab", "id");
 		const paneId = nestedString(payload, "root_pane", "pane_id") ?? nestedString(payload, "pane", "pane_id");
-		if (!tabId || !paneId) throw new Error("Herdr tab creation response did not contain tab and root pane IDs.");
-
-		const name = agentName(spec.runId);
-		const started = await this.pi.exec("herdr", [
-			"agent", "start", name,
-			"--kind", "pi",
-			"--pane", paneId,
-			"--timeout", "60000",
-			"--",
-			...subArgs(spec),
-		], { timeout: 70_000, signal });
-		if (started.code !== 0) {
-			await this.pi.exec("herdr", ["tab", "close", tabId], { timeout: 10_000 });
-			throw new Error(started.stderr || "Failed to start Sub Pi in Herdr tab.");
+		if (!tabId) throw new Error("Herdr tab creation response did not contain a tab ID; automatic cleanup is unavailable.");
+		const handle: SurfaceHandle = { adapter: "herdr", tabId, ...(paneId ? { paneId } : {}) };
+		const step = async (args: string[], timeout: number, failure: string) => {
+			signal?.throwIfAborted();
+			const result = await this.pi.exec("herdr", args, { timeout, signal });
+			if (result.code !== 0 || result.killed) throw new Error(result.stderr || failure);
+			signal?.throwIfAborted();
+		};
+		try {
+			if (created.code !== 0 || created.killed) throw new Error(created.stderr || "Failed to create Herdr tab.");
+			if (!paneId) throw new Error("Herdr tab creation response did not contain a root pane ID.");
+			const name = agentName(spec.runId);
+			await step([
+				"agent", "start", name, "--kind", "pi", "--pane", paneId, "--timeout", "60000", "--", ...subArgs(spec),
+			], 70_000, "Failed to start Sub Pi in Herdr tab.");
+			await step([
+				"pane", "report-metadata", paneId, "--source", "facets",
+				"--token", "facets_role=sub", "--token", `facets_main_session=${spec.mainSessionId}`,
+				"--token", `facets_run_id=${spec.runId}`, "--token", `facets_profile=${spec.profile.name}`,
+			], 10_000, "Failed to mark the Herdr pane as a Facets Sub.");
+			await step(["agent", "prompt", name, spec.task], 20_000, "Failed to submit the delegated task to the Herdr agent.");
+			return handle;
+		} catch (error) {
+			try {
+				// Rollback must not inherit the cancellation that caused the failure.
+				await this.close(handle);
+			} catch (cleanup) {
+				throw new HerdrLaunchCleanupError(handle, error, cleanup);
+			}
+			throw error;
 		}
-
-		const metadata = await this.pi.exec("herdr", [
-			"pane", "report-metadata", paneId,
-			"--source", "facets",
-			"--token", "facets_role=sub",
-			"--token", `facets_main_session=${spec.mainSessionId}`,
-			"--token", `facets_run_id=${spec.runId}`,
-			"--token", `facets_profile=${spec.profile.name}`,
-		], { timeout: 10_000, signal });
-		if (metadata.code !== 0) {
-			await this.pi.exec("herdr", ["tab", "close", tabId], { timeout: 10_000 });
-			throw new Error(metadata.stderr || "Failed to mark the Herdr pane as a Facets Sub.");
-		}
-
-		const prompted = await this.pi.exec("herdr", [
-			"agent", "prompt", name,
-			spec.task,
-		], { timeout: 20_000, signal });
-		if (prompted.code !== 0) {
-			await this.pi.exec("herdr", ["tab", "close", tabId], { timeout: 10_000 });
-			throw new Error(prompted.stderr || "Failed to submit the delegated task to the Herdr agent.");
-		}
-		return { adapter: "herdr", tabId, paneId };
 	}
 
 	async status(handle: SurfaceHandle | undefined): Promise<SubAgentStatus> {
@@ -132,6 +136,7 @@ export class HerdrTabAdapter implements SubSurfaceAdapter {
 
 	async close(handle: SurfaceHandle): Promise<void> {
 		if (!handle.tabId) return;
-		await this.pi.exec("herdr", ["tab", "close", handle.tabId], { timeout: 10_000 });
+		const result = await this.pi.exec("herdr", ["tab", "close", handle.tabId], { timeout: 10_000 });
+		if (result.code !== 0 || result.killed) throw new Error(result.stderr || `Failed to close Herdr tab ${handle.tabId}.`);
 	}
 }

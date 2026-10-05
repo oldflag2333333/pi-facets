@@ -3,8 +3,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createChannel, listTalkToSub, listTalkToMain, readInterrupt, readManifest, talkToMain, writeActiveTurn, writeSubSessionInfo } from "../src/channel.js";
+import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createChannel, listTalkToSub, listTalkToMain, readInterrupt, readManifest, talkToMain, writeActiveTurn, writeSubSessionInfo, writeSubClosed } from "../src/channel.js";
 import { MainRunManager } from "../src/run-manager.js";
 import type { RunSnapshot } from "../src/types.js";
 
@@ -23,7 +23,7 @@ afterEach(() => {
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
-function openRun(manager: MainRunManager): RunSnapshot {
+function openRun(manager: MainRunManager, runId = "open-run"): RunSnapshot {
 	const profile = {
 		version: 1 as const,
 		name: "reviewer",
@@ -35,7 +35,7 @@ function openRun(manager: MainRunManager): RunSnapshot {
 		resolvedExtensions: [],
 	};
 	const channel = createChannel({
-		runId: "open-run",
+		runId,
 		mainSessionId: "main-session",
 		title: "Review MR",
 		task: "Review it.",
@@ -131,28 +131,39 @@ test("talks to and explicitly closes an open Sub without triggering a Main turn"
 	assert.deepEqual(messages, []);
 });
 
-test("waits for an idle Main and triggers exactly one turn for a Sub message", async () => {
+test("queues a Sub message while Main is busy and acknowledges its receipt without duplicate submission", () => {
+	const receipts = SessionManager.inMemory();
+	let idle = false;
 	const messages: Array<{ message: unknown; options: unknown }> = [];
 	const pi = {
+		on: () => () => {},
 		appendEntry: () => {},
-		sendMessage: (message: unknown, options: unknown) => messages.push({ message, options }),
+		sendMessage: (message: any, options: unknown) => {
+			messages.push({ message, options });
+			if (idle) receipts.appendCustomMessageEntry(message.customType, message.content, message.display, message.details);
+		},
 	} as unknown as ExtensionAPI;
 	const manager = new MainRunManager(pi);
 	const run = openRun(manager);
 	const manifest = readManifest(run.channelDir);
 	writeSubSessionInfo(run.channelDir, manifest, { sessionId: "sub-session", sessionFile: "/tmp/sub.jsonl" });
-	talkToMain(run.channelDir, manifest, "Review complete.");
+	const sent = talkToMain(run.channelDir, manifest, "Review complete.");
 
-	let idle = false;
 	const ctx = {
+		model: {},
+		signal: new AbortController().signal,
 		isIdle: () => idle,
-		sessionManager: { getEntries: () => [] },
+		hasPendingMessages: () => false,
+		sessionManager: receipts,
+		hasUI: true,
+		ui: { notify: () => {} },
 	} as unknown as ExtensionContext;
 	manager.start(ctx);
-	assert.equal(messages.length, 0);
-
+	assert.equal(messages.length, 1);
+	const queued = messages[0]!.message as any;
 	idle = true;
-	await new Promise((resolve) => setTimeout(resolve, 500));
+	receipts.appendCustomMessageEntry(queued.customType, queued.content, queued.display, queued.details);
+	manager.start(ctx);
 	manager.shutdown();
 
 	assert.equal(run.subSessionId, "sub-session");
@@ -163,6 +174,6 @@ test("waits for an idle Main and triggers exactly one turn for a Sub message", a
 	assert.deepEqual(notification.options, { deliverAs: "followUp", triggerTurn: true });
 	const delivered = notification.message as { content?: string; details?: { title?: string; message?: string } };
 	assert.match(String(delivered.content), /Review complete\./);
-	assert.deepEqual(delivered.details, { title: "Review MR", message: "Review complete." });
+	assert.deepEqual(delivered.details, { title: "Review MR", message: "Review complete.", direction: "to-main", runId: run.runId, messageId: sent.id });
 	assert.deepEqual(listTalkToMain(run.channelDir, readManifest(run.channelDir)), []);
 });

@@ -26,6 +26,9 @@ test("Sub aborts only the targeted turn and stays open", async () => {
 		setSessionName: () => {},
 		registerMessageRenderer: () => {},
 		registerTool: () => {},
+		getAllTools: () => [{ name: "read" }, { name: "talk" }],
+		setActiveTools: () => {},
+		getActiveTools: () => ["read", "talk"],
 	} as unknown as ExtensionAPI;
 	let idle = true;
 	let aborts = 0;
@@ -39,12 +42,13 @@ test("Sub aborts only the targeted turn and stays open", async () => {
 		sessionManager: { getSessionFile: () => undefined },
 	} as unknown as ExtensionContext;
 	try {
-		// Import after setting the Sub's channel environment, which is captured at module load.
+		// Register against the Sub\'s configured channel environment.
 		const { registerSub } = await import("../src/tools/sub.js");
 		registerSub(pi);
 		const fire = (event: string, ...args: unknown[]) => handlers.get(event)?.forEach((handler) => handler(...args));
 		stopProtocol = () => fire("session_shutdown", { reason: "reload" }, ctx);
 		fire("session_start", {}, ctx);
+		fire("resources_discover", { reason: "startup" }, ctx);
 		idle = false;
 		fire("agent_start", {}, ctx);
 		const manifest = readManifest(channel.channelDir);
@@ -65,6 +69,22 @@ test("Sub aborts only the targeted turn and stays open", async () => {
 		await delay(450);
 		assert.equal(aborts, 1);
 		assert.equal(readInterrupt(channel.channelDir, manifest), undefined);
+
+		// A native follow-up may begin new work without another agent_start.
+		const initialInputTurn = readActiveTurn(channel.channelDir, manifest)!;
+		fire("message_start", { message: { role: "user", content: "Initial task" } }, ctx);
+		assert.equal(readActiveTurn(channel.channelDir, manifest)?.turnId, initialInputTurn.turnId);
+		const second = readActiveTurn(channel.channelDir, manifest)!;
+		writeInterrupt(channel.channelDir, manifest, second);
+		fire("message_start", { message: { role: "custom", customType: "facets-message", details: { direction: "to-sub" } } }, ctx);
+		const nextInput = readActiveTurn(channel.channelDir, manifest)!;
+		assert.notEqual(nextInput.turnId, second.turnId);
+		await delay(150);
+		assert.equal(aborts, 1);
+		writeInterrupt(channel.channelDir, manifest, nextInput);
+		await delay(150);
+		assert.equal(aborts, 2);
+		assert.equal(shutdowns, 0);
 	} finally {
 		stopProtocol?.();
 		for (const [key, value] of Object.entries(previous)) {

@@ -14,9 +14,7 @@ import type {
 
 const PROFILE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const MAX_PROFILE_BYTES = 256 * 1024;
-const MAX_SYSTEM_PROMPT_BYTES = 256 * 1024;
 const PROFILE_CONFIG_FILE = "config.json";
-const PROFILE_SYSTEM_PROMPT_FILE = "SYSTEM.md";
 const ALLOWED_KEYS = new Set([
 	"version",
 	"name",
@@ -79,30 +77,11 @@ function parseProfile(value: unknown, expectedName: string): ProfileDefinition {
 interface ProfileCandidate {
 	name: string;
 	configPath: string;
-	directoryPath?: string;
 }
 
 interface LoadedProfileDirectory {
 	profiles: Map<string, LoadedProfile>;
 	invalidNames: Set<string>;
-}
-
-function readSystemPrompt(directoryPath: string): string | undefined {
-	const systemPromptPath = path.join(directoryPath, PROFILE_SYSTEM_PROMPT_FILE);
-	let stat: fs.Stats;
-	try {
-		stat = fs.statSync(systemPromptPath);
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-		throw error;
-	}
-	if (!stat.isFile()) throw new Error(`${PROFILE_SYSTEM_PROMPT_FILE} must be a regular file`);
-	if (stat.size > MAX_SYSTEM_PROMPT_BYTES) {
-		throw new Error(`${PROFILE_SYSTEM_PROMPT_FILE} exceeds ${MAX_SYSTEM_PROMPT_BYTES} bytes`);
-	}
-	const content = fs.readFileSync(systemPromptPath, "utf8").replace(/^\uFEFF/, "");
-	if (!content.trim()) throw new Error(`${PROFILE_SYSTEM_PROMPT_FILE} must not be empty`);
-	return content;
 }
 
 function loadDirectory(directory: string, source: ProfileSource, diagnostics: ProfileDiagnostic[]): LoadedProfileDirectory {
@@ -134,7 +113,6 @@ function loadDirectory(directory: string, source: ProfileSource, diagnostics: Pr
 			candidate = {
 				name: entryName,
 				configPath: path.join(entryPath, PROFILE_CONFIG_FILE),
-				directoryPath: entryPath,
 			};
 		}
 		if (!candidate) continue;
@@ -168,22 +146,8 @@ function loadDirectory(directory: string, source: ProfileSource, diagnostics: Pr
 			continue;
 		}
 
-		let systemPrompt: string | undefined;
-		if (candidate.directoryPath) {
-			try {
-				systemPrompt = readSystemPrompt(candidate.directoryPath);
-			} catch (error) {
-				invalidNames.add(name);
-				diagnostics.push({
-					path: path.join(candidate.directoryPath, PROFILE_SYSTEM_PROMPT_FILE),
-					message: error instanceof Error ? error.message : String(error),
-				});
-				continue;
-			}
-		}
 		profiles.set(parsed.name, {
 			...parsed,
-			...(systemPrompt !== undefined ? { systemPrompt } : {}),
 			source,
 			sourcePath: candidate.configPath,
 		});
@@ -240,7 +204,7 @@ function skillCandidate(candidate: string): string | undefined {
 	return undefined;
 }
 
-function resolveSkill(reference: string, profile: LoadedProfile, cwd: string): string {
+function resolveSkill(reference: string, profile: LoadedProfile, cwd: string, includeProject: boolean): string {
 	const expanded = expandHome(reference);
 	const looksLikePath = path.isAbsolute(expanded) || expanded.startsWith(".") || expanded.includes("/") || expanded.includes("\\");
 	const candidates = looksLikePath
@@ -248,10 +212,10 @@ function resolveSkill(reference: string, profile: LoadedProfile, cwd: string): s
 		: [
 			path.join(getAgentDir(), "skills", expanded),
 			path.join(os.homedir(), ".agents", "skills", expanded),
-			...ancestorDirectories(cwd).flatMap((directory) => [
+			...(includeProject ? ancestorDirectories(cwd).flatMap((directory) => [
 				path.join(directory, CONFIG_DIR_NAME, "skills", expanded),
 				path.join(directory, ".agents", "skills", expanded),
-			]),
+			]) : []),
 		];
 	for (const candidate of candidates) {
 		const resolved = skillCandidate(candidate) ?? skillCandidate(`${candidate}.md`);
@@ -271,7 +235,7 @@ export function resolveProfile(name: string, cwd: string, includeProject: boolea
 	}
 	return {
 		...profile,
-		resolvedSkills: (profile.skills ?? []).map((skill) => materializeProfileSkill(resolveSkill(skill, profile, cwd))),
+		resolvedSkills: (profile.skills ?? []).map((skill) => materializeProfileSkill(resolveSkill(skill, profile, cwd, includeProject))),
 		resolvedExtensions: [],
 	};
 }

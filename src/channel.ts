@@ -18,7 +18,7 @@ const MAX_CONTROL_BYTES = 64 * 1024;
 
 export const MESSAGE_TYPE = "facets-message";
 
-type TalkDirection = "to-main" | "to-sub";
+export type TalkDirection = "to-main" | "to-sub";
 
 function safeSegment(value: string): string {
 	return value.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 96) || "unknown";
@@ -34,17 +34,17 @@ export function channelPath(mainSessionId: string, runId: string): string {
 	return path.join(runtimeRoot(), safeSegment(mainSessionId), safeSegment(runId));
 }
 
-function assertSize(value: unknown, maxBytes: number, label: string): void {
-	const size = Buffer.byteLength(JSON.stringify(value), "utf8");
-	if (size > maxBytes) throw new Error(`${label} exceeds ${maxBytes} bytes.`);
-}
-
 export function writeAtomicJson(file: string, value: unknown, maxBytes = MAX_CONTROL_BYTES): void {
-	assertSize(value, maxBytes, path.basename(file));
-	fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+	const serialized = `${JSON.stringify(value, null, 2)}\n`;
+	if (Buffer.byteLength(serialized, "utf8") > maxBytes) throw new Error(`${path.basename(file)} exceeds ${maxBytes} bytes.`);
+	// createChannel owns directory creation. Late writes must not resurrect a closed channel.
 	const temporary = `${file}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
-	fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-	fs.renameSync(temporary, file);
+	try {
+		fs.writeFileSync(temporary, serialized, { encoding: "utf8", mode: 0o600 });
+		fs.renameSync(temporary, file);
+	} finally {
+		fs.rmSync(temporary, { force: true });
+	}
 }
 
 function readJson(file: string): unknown | undefined {
@@ -63,11 +63,21 @@ function record(value: unknown): Record<string, unknown> | undefined {
 export function createChannel(input: Omit<DelegateManifest, "version" | "token" | "createdAt">): DelegateManifest & { channelDir: string } {
 	const token = randomBytes(32).toString("hex");
 	const channelDir = channelPath(input.mainSessionId, input.runId);
-	fs.mkdirSync(path.join(channelDir, "to-main"), { recursive: true, mode: 0o700 });
-	fs.mkdirSync(path.join(channelDir, "to-sub"), { recursive: true, mode: 0o700 });
-	const manifest: DelegateManifest = { version: 1, ...input, token, createdAt: Date.now() };
-	writeAtomicJson(path.join(channelDir, "manifest.json"), manifest, MAX_MANIFEST_BYTES);
-	return { ...manifest, channelDir };
+	fs.mkdirSync(path.dirname(channelDir), { recursive: true, mode: 0o700 });
+	// Never replace an existing run\'s capability token or remove its channel.
+	fs.mkdirSync(channelDir, { mode: 0o700 });
+	try {
+		fs.mkdirSync(path.join(channelDir, "to-main"), { mode: 0o700 });
+		fs.mkdirSync(path.join(channelDir, "to-sub"), { mode: 0o700 });
+		const manifest: DelegateManifest = { version: 1, ...input, token, createdAt: Date.now() };
+		writeAtomicJson(path.join(channelDir, "manifest.json"), manifest, MAX_MANIFEST_BYTES);
+		return { ...manifest, channelDir };
+	} catch (error) {
+		try { removeChannel(channelDir); } catch (cleanup) {
+			throw new AggregateError([error, cleanup], `Failed to create and clean up Facets channel ${channelDir}.`);
+		}
+		throw error;
+	}
 }
 
 function validProfile(value: unknown): boolean {
@@ -82,8 +92,7 @@ function validProfile(value: unknown): boolean {
 		&& (profile.model === undefined || typeof profile.model === "string")
 		&& (profile.thinkingLevel === undefined || typeof profile.thinkingLevel === "string")
 		&& (profile.sessionPersistence === undefined || profile.sessionPersistence === "ephemeral" || profile.sessionPersistence === "persistent")
-		&& (profile.instructions === undefined || typeof profile.instructions === "string")
-		&& (profile.systemPrompt === undefined || typeof profile.systemPrompt === "string"));
+		&& (profile.instructions === undefined || typeof profile.instructions === "string"));
 }
 
 export function readManifest(channelDir: string): DelegateManifest {
@@ -97,9 +106,22 @@ export function readManifest(channelDir: string): DelegateManifest {
 }
 
 function writeTalk(channelDir: string, manifest: DelegateManifest, direction: TalkDirection, message: string): TalkMessage {
+	// Each direction has one writer. Persist the counter before the payload;
+	// gaps after a failed write are harmless, and reloads cannot reorder messages.
+	const counterPath = path.join(channelDir, `${direction}-sequence.json`);
+	const storedCounter = readJson(counterPath);
+	const previous = record(storedCounter);
+	if (storedCounter !== undefined && (!previous || previous.runId !== manifest.runId || previous.token !== manifest.token
+		|| !Number.isSafeInteger(previous.sequence) || (previous.sequence as number) < 1)) {
+		throw new Error("Invalid Facets talk sequence counter.");
+	}
+	const sequence = ((previous?.sequence as number | undefined) ?? 0) + 1;
+	if (!Number.isSafeInteger(sequence)) throw new Error("Facets talk sequence exhausted.");
+	writeAtomicJson(counterPath, { runId: manifest.runId, token: manifest.token, sequence });
 	const talk: TalkMessage = {
 		version: 1,
 		id: randomUUID(),
+		sequence,
 		runId: manifest.runId,
 		token: manifest.token,
 		createdAt: Date.now(),
@@ -120,7 +142,8 @@ export function talkToSub(channelDir: string, manifest: DelegateManifest, messag
 function validTalk(value: unknown, manifest: DelegateManifest): value is TalkMessage {
 	const item = record(value);
 	return Boolean(item && item.version === 1 && item.runId === manifest.runId && item.token === manifest.token
-		&& typeof item.id === "string" && typeof item.createdAt === "number" && typeof item.message === "string");
+		&& typeof item.id === "string" && Number.isSafeInteger(item.sequence) && (item.sequence as number) > 0
+		&& typeof item.createdAt === "number" && typeof item.message === "string");
 }
 
 function listTalk(channelDir: string, manifest: DelegateManifest, direction: TalkDirection): TalkMessage[] {
@@ -136,7 +159,7 @@ function listTalk(channelDir: string, manifest: DelegateManifest, direction: Tal
 		const value = readJson(path.join(channelDir, direction, name));
 		if (validTalk(value, manifest)) messages.push(value);
 	}
-	return messages.sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
+	return messages.sort((left, right) => left.sequence - right.sequence);
 }
 
 export function listTalkToMain(channelDir: string, manifest: DelegateManifest): TalkMessage[] {
@@ -148,7 +171,7 @@ export function listTalkToSub(channelDir: string, manifest: DelegateManifest): T
 }
 
 export function removeTalk(channelDir: string, direction: TalkDirection, id: string): void {
-	try { fs.rmSync(path.join(channelDir, direction, `${safeSegment(id)}.json`), { force: true }); } catch {}
+	fs.rmSync(path.join(channelDir, direction, `${safeSegment(id)}.json`), { force: true });
 }
 
 export function writeSubSessionInfo(channelDir: string, manifest: DelegateManifest, input: {
@@ -257,5 +280,5 @@ export function readSubClosed(channelDir: string, manifest: DelegateManifest): S
 }
 
 export function removeChannel(channelDir: string): void {
-	try { fs.rmSync(channelDir, { recursive: true, force: true }); } catch {}
+	fs.rmSync(channelDir, { recursive: true, force: true });
 }

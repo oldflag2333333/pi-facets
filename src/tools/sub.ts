@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Container, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
@@ -10,18 +10,19 @@ import {
 	readInterrupt,
 	readClose,
 	readManifest,
-	removeTalk,
 	talkToMain,
 	writeSubClosed,
 	writeSubSessionInfo,
 	writeActiveTurn,
 } from "../channel.js";
-import { buildSubSystemPrompt } from "../profiles/system-prompt.js";
+import { applySubPromptSections, bindPromptSections } from "../profiles/system-prompt.js";
+import { SUB_CONTROL_TOOLS } from "../profiles/launch-args.js";
+import { applyProfileTools, ProfileToolPolicy } from "../profiles/tool-policy.js";
 import { talkView } from "../talk-render.js";
+import { ChannelMonitor } from "../channel-monitor.js";
+import { bindInboxEvents } from "../inbox-state.js";
+import { deliverTalk, ProtocolErrors } from "../talk-delivery.js";
 import type { ActiveTurn, DelegateManifest } from "../types.js";
-
-const channelDir = process.env.PI_FACETS_CHANNEL;
-const envToken = process.env.PI_FACETS_TOKEN;
 
 function contentText(content: unknown): string {
 	if (typeof content === "string") return content;
@@ -33,6 +34,8 @@ function contentText(content: unknown): string {
 }
 
 function loadManifest(): { channelDir: string; manifest: DelegateManifest } {
+	const channelDir = process.env.PI_FACETS_CHANNEL;
+	const envToken = process.env.PI_FACETS_TOKEN;
 	if (!channelDir) throw new Error("PI_FACETS_CHANNEL is missing in Sub Pi.");
 	const manifest = readManifest(channelDir);
 	if (!envToken || envToken !== manifest.token) throw new Error("Sub channel capability token does not match.");
@@ -41,11 +44,42 @@ function loadManifest(): { channelDir: string; manifest: DelegateManifest } {
 
 export function registerSub(pi: ExtensionAPI): void {
 	const loaded = loadManifest();
-	let delivering = false;
+	const allowedTools = [...new Set([...loaded.manifest.profile.tools, ...SUB_CONTROL_TOOLS])];
+	const toolPolicy = new ProfileToolPolicy(pi);
+	toolPolicy.denyAll("The Facets Sub profile has not initialized successfully.");
+	const protocolErrors = new ProtocolErrors();
+	let closing = false;
 	let activeTurn: ActiveTurn | undefined;
-	let protocolPoller: ReturnType<typeof setInterval> | undefined;
+	let inputSeen = false;
+	let activeContext: ExtensionContext | undefined;
+	let ready = false;
+	const monitor = new ChannelMonitor(
+		() => scan(),
+		(_id, error) => {
+			if (activeContext) protocolErrors.report(activeContext, `watch:${loaded.manifest.runId}`, new Error(`File watching unavailable; the 5-second scan remains active. ${error instanceof Error ? error.message : String(error)}`));
+		},
+		() => protocolErrors.clear(`watch:${loaded.manifest.runId}`),
+	);
+	bindInboxEvents(pi, () => activeContext, () => monitor.wakeAll());
+
+	// Pi emits resource discovery after all session_start handlers, including
+	// extensions that register the profile's tools dynamically during startup.
+	pi.on("resources_discover", (_event, ctx) => {
+		try {
+			applyProfileTools(pi, loaded.manifest.profile.name, allowedTools);
+			toolPolicy.allow(loaded.manifest.profile.name, allowedTools);
+			ready = true;
+			monitor.wakeAll();
+		} catch (error) {
+			const reason = `Unable to initialize Sub profile: ${error instanceof Error ? error.message : String(error)}`;
+			toolPolicy.denyAll(reason);
+			talkToMain(loaded.channelDir, loaded.manifest, reason);
+			ctx.shutdown();
+		}
+	});
 
 	pi.on("session_start", (_event, ctx) => {
+		activeContext = ctx;
 		pi.setSessionName(`[sub] ${loaded.manifest.title}`);
 		ctx.ui.setTitle(`[sub] ${loaded.manifest.title}`);
 		ctx.ui.setStatus("facets", `sub · ${loaded.manifest.profile.name}`);
@@ -59,8 +93,19 @@ export function registerSub(pi: ExtensionAPI): void {
 		const previousTurn = readActiveTurn(loaded.channelDir, loaded.manifest);
 		if (ctx.isIdle() && previousTurn) clearActiveTurn(loaded.channelDir, previousTurn);
 		activeTurn = ctx.isIdle() ? undefined : previousTurn;
-		protocolPoller = setInterval(() => {
+		monitor.add(loaded.manifest.runId, loaded.channelDir, "to-sub");
+		monitor.start();
+		scan();
+	});
+
+	function scan(): void {
+		const ctx = activeContext;
+		if (!ctx || closing) return;
+		try {
 			if (readClose(loaded.channelDir, loaded.manifest)) {
+				closing = true;
+				toolPolicy.denyAll("The Main has closed this Sub session.");
+				monitor.stop();
 				ctx.abort();
 				ctx.shutdown();
 				return;
@@ -70,34 +115,33 @@ export function registerSub(pi: ExtensionAPI): void {
 				clearInterrupt(loaded.channelDir);
 				if (!ctx.isIdle() && interrupt.turnId === activeTurn?.turnId) ctx.abort();
 			}
-			if (delivering || !ctx.isIdle()) return;
-			const message = listTalkToSub(loaded.channelDir, loaded.manifest)[0];
-			if (!message) return;
-			delivering = true;
-			try {
-				pi.sendMessage({
-					customType: MESSAGE_TYPE,
-					content: `[Facets Main message]\nMain says:\n${message.message}`,
-					display: true,
-					details: { title: loaded.manifest.title, message: message.message },
-				}, { deliverAs: "followUp", triggerTurn: true });
-				removeTalk(loaded.channelDir, "to-sub", message.id);
-			} catch (error) {
-				removeTalk(loaded.channelDir, "to-sub", message.id);
-				talkToMain(
-					loaded.channelDir,
-					loaded.manifest,
-					`Unable to process the Main message: ${error instanceof Error ? error.message : String(error)}`,
-				);
-			} finally {
-				delivering = false;
+			if (!ready) return;
+			for (const message of listTalkToSub(loaded.channelDir, loaded.manifest)) {
+				deliverTalk(pi, ctx, loaded.channelDir, loaded.manifest, "to-sub", message,
+					`[Facets Main message]\nMain says:\n${message.message}`);
 			}
-		}, 400);
-		protocolPoller.unref?.();
-	});
+			protocolErrors.clear(loaded.manifest.runId);
+		} catch (error) {
+			protocolErrors.report(ctx, loaded.manifest.runId, error);
+		}
+	}
 
 	pi.on("agent_start", () => {
+		if (closing) return;
+		inputSeen = false;
 		activeTurn = writeActiveTurn(loaded.channelDir, loaded.manifest);
+	});
+
+	pi.on("message_start", (event) => {
+		const message = event.message;
+		const mainInput = message.role === "custom" && message.customType === MESSAGE_TYPE
+			&& (message.details as { direction?: string } | undefined)?.direction === "to-sub";
+		// Native follow-ups can start new work inside one agent run. A late
+		// interrupt for the previous input must not abort that subsequent work.
+		if (!closing && (message.role === "user" || mainInput)) {
+			if (inputSeen) activeTurn = writeActiveTurn(loaded.channelDir, loaded.manifest);
+			inputSeen = true;
+		}
 	});
 
 	pi.on("agent_settled", (_event, ctx) => {
@@ -107,8 +151,10 @@ export function registerSub(pi: ExtensionAPI): void {
 		}
 	});
 
-	pi.on("before_agent_start", (event) => {
-		return { systemPrompt: buildSubSystemPrompt(event.systemPrompt, loaded.manifest.profile) };
+	bindPromptSections(pi, ["facets_sub_protocol", "facets_profile"], () => {
+		const sections: Record<string, string> = {};
+		applySubPromptSections(sections, loaded.manifest.profile);
+		return sections;
 	});
 
 	pi.registerMessageRenderer(MESSAGE_TYPE, (message, options, theme) => {
@@ -129,6 +175,7 @@ export function registerSub(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "talk",
 		label: "talk",
+		exposure: "model-only",
 		description: "Send one message to the Main Pi and end the current turn. Use it to ask for information or deliver work. Format non-trivial messages as readable Markdown with paragraph breaks and lists.",
 		promptSnippet: "Send a message to the Main Pi",
 		promptGuidelines: ["Use talk whenever the Sub needs to communicate with the Main; the Main decides when to close the Sub session."],
@@ -149,7 +196,7 @@ export function registerSub(pi: ExtensionAPI): void {
 		async execute(_id, params) {
 			const message = talkToMain(loaded.channelDir, loaded.manifest, params.message);
 			return {
-				content: [{ type: "text", text: "Message delivered to the Main Pi." }],
+				content: [{ type: "text", text: "Message queued for the Main Pi." }],
 				details: { messageId: message.id },
 				terminate: true,
 			};
@@ -161,9 +208,9 @@ export function registerSub(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", (event) => {
-		if (protocolPoller) clearInterval(protocolPoller);
-		protocolPoller = undefined;
-		if (event.reason === "quit" && !readClose(loaded.channelDir, loaded.manifest)) {
+		monitor.stop();
+		activeContext = undefined;
+		if (event.reason === "quit" && !closing && !readClose(loaded.channelDir, loaded.manifest)) {
 			writeSubClosed(loaded.channelDir, loaded.manifest, "The Sub session was closed manually.");
 		}
 	});

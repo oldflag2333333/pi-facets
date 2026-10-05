@@ -15,6 +15,7 @@ export interface DelegateManifest {
 export interface TalkMessage {
 	version: 1;
 	id: string;
+	sequence: number;
 	runId: string;
 	token: string;
 	createdAt: number;
@@ -77,6 +78,8 @@ export interface RunSnapshot {
 	channelDir: string;
 	createdAt: number;
 	updatedAt: number;
+	/** Surface is closed; retain the channel only until pending messages are received. */
+	closedAt?: number;
 	subSessionId?: string;
 	subSessionFile?: string;
 	surface?: SurfaceHandle;

@@ -1,55 +1,67 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-	buildSubSystemPrompt,
-	buildStartupSystemPrompt,
-	SUB_PROTOCOL,
-} from "../src/profiles/system-prompt.js";
+import { applySubPromptSections, applyStartupPromptSections, bindPromptSections, SUB_PROTOCOL } from "../src/profiles/system-prompt.js";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { ResolvedProfile } from "../src/profiles/types.js";
 
 function profile(overrides: Partial<ResolvedProfile> = {}): ResolvedProfile {
 	return {
-		version: 1,
-		name: "reviewer",
-		tools: ["read"],
-		instructions: "Follow the profile instructions.",
-		source: "global",
-		sourcePath: "/tmp/reviewer/config.json",
-		resolvedSkills: [],
-		resolvedExtensions: [],
-		...overrides,
+		version: 1, name: "reviewer", tools: ["read"], instructions: "Follow the profile instructions.",
+		source: "global", sourcePath: "/tmp/reviewer/config.json", resolvedSkills: [], resolvedExtensions: [], ...overrides,
 	};
 }
 
-test("uses handwritten SYSTEM.md verbatim before the mandatory Sub protocol", () => {
-	const result = buildSubSystemPrompt("Pi generated prompt", profile({
-		systemPrompt: "Handwritten system prompt.\n",
-	}));
-	assert.equal(result, `Handwritten system prompt.\n\n${SUB_PROTOCOL}`);
-	assert.doesNotMatch(result, /Pi generated prompt|Follow the profile instructions/);
+const nativeSections = { tools: "Native tools", rules: "Native rules", unrelated_extension: "Keep me" };
+
+test("adds Main catalog and profile instructions as independent sections without replacing native content", () => {
+	const sections = { ...nativeSections } as Record<string, string>;
+	applyStartupPromptSections(sections, profile(), "Available Facets profiles");
+	assert.deepEqual(sections, {
+		...nativeSections,
+		facets_profiles: "Available Facets profiles",
+		facets_profile: "## Active Facets profile: reviewer\nFollow the profile instructions.",
+	});
+	applyStartupPromptSections(sections, profile(), "Available Facets profiles");
+	assert.equal(sections.facets_profile.split("Follow the profile instructions.").length, 2);
 });
 
-test("keeps the existing Sub prompt composition without SYSTEM.md", () => {
-	const result = buildSubSystemPrompt("Pi generated prompt", profile());
-	assert.equal(
-		result,
-		`Pi generated prompt\n\n${SUB_PROTOCOL}\n\n## Facets profile: reviewer\nFollow the profile instructions.`,
-	);
+test("custom-message runs supplement only missing Facets sections without replacing native context", () => {
+	const handlers = new Map<string, (...args: any[]) => any>();
+	const pi = { on: (event: string, callback: (...args: any[]) => any) => handlers.set(event, callback) } as unknown as ExtensionAPI;
+	bindPromptSections(pi, ["facets_profile"], () => ({ facets_profile: "Role instructions" }));
+	const original = [{ role: "system", content: "", sections: { preamble: "Native role", tools: "<tools>read</tools>" }, timestamp: 0 }, { role: "user", content: "Incoming task", timestamp: 1 }];
+	const result = handlers.get("context_with_system")!({ messages: original });
+	assert.deepEqual(result.messages.slice(0, 2), original);
+	assert.deepEqual(result.messages[2].sections, { facets_profile: "<facets_profile>\nRole instructions\n</facets_profile>" });
+	assert.equal(handlers.get("context_with_system")!({ messages: result.messages }), undefined);
 });
 
-test("uses handwritten SYSTEM.md as the complete direct-startup prompt", () => {
-	const result = buildStartupSystemPrompt(
-		"Pi generated prompt",
-		profile({ systemPrompt: "Handwritten system prompt." }),
-		"Available Facets profiles",
-	);
-	assert.equal(result, "Handwritten system prompt.");
+test("a Main without a selected profile still receives the profile catalog", () => {
+	const sections: Record<string, string> = {};
+	applyStartupPromptSections(sections, undefined, "Available Facets profiles");
+	assert.deepEqual(sections, { facets_profiles: "Available Facets profiles" });
 });
 
-test("keeps the existing direct-startup composition without SYSTEM.md", () => {
-	const result = buildStartupSystemPrompt("Pi generated prompt", profile(), "Available Facets profiles");
-	assert.equal(
-		result,
-		"Pi generated prompt\n\nAvailable Facets profiles\n\n## Active Facets profile: reviewer\nFollow the profile instructions.",
-	);
+test("removes obsolete Facets sections without touching other extensions", () => {
+	const sections: Record<string, string> = { ...nativeSections, facets_profiles: "Old catalog", facets_profile: "Old instructions" };
+	applyStartupPromptSections(sections, undefined, "");
+	assert.deepEqual(sections, nativeSections);
+});
+
+test("adds the mandatory Sub protocol and profile instructions without Main context", () => {
+	const sections = { ...nativeSections } as Record<string, string>;
+	applySubPromptSections(sections, profile());
+	assert.equal(sections.facets_profiles, undefined);
+	assert.equal(sections.facets_main, undefined);
+	assert.deepEqual(sections, {
+		...nativeSections,
+		facets_sub_protocol: SUB_PROTOCOL,
+		facets_profile: "## Facets profile: reviewer\nFollow the profile instructions.",
+	});
+});
+
+test("a Sub without profile instructions still gets its protocol and no stale instructions", () => {
+	const sections: Record<string, string> = { ...nativeSections, facets_profile: "Old instructions" };
+	applySubPromptSections(sections, profile({ instructions: undefined }));
+	assert.deepEqual(sections, { ...nativeSections, facets_sub_protocol: SUB_PROTOCOL });
 });

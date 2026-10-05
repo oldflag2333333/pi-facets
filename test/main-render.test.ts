@@ -5,6 +5,7 @@ import { registerMainTools } from "../src/tools/main.js";
 
 interface CapturedTool {
 	name: string;
+	exposure?: string;
 	renderCall?: (args: unknown, theme: unknown, context: { expanded: boolean; state?: Record<string, unknown> }) => { render(width: number): string[] };
 	renderResult?: (result: unknown, options: { isPartial: boolean }, theme: unknown, context?: { isError: boolean }) => { render(width: number): string[] };
 	execute?: (_id: string, params: { all?: boolean }) => Promise<{ content: Array<{ text: string }>; details: unknown }>;
@@ -37,7 +38,12 @@ test("renders configured tools and skills under a Sub launch", () => {
 			tools: ["web_search", "fetch_content"],
 			skills: ["source-review"],
 		},
-	}, { isPartial: false }, theme);
+	}, { isPartial: false }, theme, { isError: false });
+	assert.equal(delegate.exposure, "model-only");
+	assert.equal(tools.find((tool) => tool.name === "talk")?.exposure, undefined);
+	const failure = delegate.renderResult({ content: [{ type: "text", text: "Cleanup failed; retry close_sub" }] }, { isPartial: false }, theme, { isError: true }).render(240).join("\n");
+	assert.match(failure, /Cleanup failed/);
+	assert.doesNotMatch(failure, /✓/);
 	const rendered = component.render(240).join("\n");
 	assert.match(rendered, /Research topic · research · persistent · herdr/);
 	assert.match(rendered, /tools\s+web_search · fetch_content/);

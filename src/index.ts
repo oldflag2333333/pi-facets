@@ -18,7 +18,7 @@ export default function piDelegate(pi: ExtensionAPI): void {
 	const startupProfile = new StartupProfileRuntime(pi);
 	registerMainTools(pi, manager);
 	startupProfile.register();
-	new MainContextRuntime(pi, () => !startupProfile.hasSystemPromptOverride()).register();
+	new MainContextRuntime(pi).register();
 
 	pi.registerMessageRenderer(MESSAGE_TYPE, (message, options, theme) => {
 		const details = message.details as { title?: string; message?: string } | undefined;

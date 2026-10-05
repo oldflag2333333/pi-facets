@@ -3,26 +3,28 @@ import * as fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { AdapterRegistry } from "./adapters/index.js";
+import { ChannelMonitor } from "./channel-monitor.js";
+import { bindInboxEvents } from "./inbox-state.js";
+import { HerdrLaunchCleanupError } from "./adapters/herdr.js";
 import {
 	createChannel,
-	MESSAGE_TYPE,
 	readActiveTurn,
 	listTalkToMain,
 	readSubClosed,
 	readSubSessionInfo,
 	readManifest,
 	removeChannel,
-	removeTalk,
 	talkToSub,
 	writeClose,
+	writeSubClosed,
 	writeInterrupt,
 } from "./channel.js";
 import type { ResolvedProfile } from "./profiles/types.js";
 import { listResumableSubSessions, resolveResumableSubSession } from "./sessions.js";
-import type { DelegateManifest, RunSnapshot, SubAgentStatus } from "./types.js";
+import { deliverTalk, ProtocolErrors } from "./talk-delivery.js";
+import type { RunSnapshot, SubAgentStatus } from "./types.js";
 
 const RUN_ENTRY = "facets-run";
-const POLL_MS = 400;
 
 function parseSnapshot(value: unknown): RunSnapshot | undefined {
 	if (!value || typeof value !== "object") return;
@@ -43,6 +45,7 @@ function parseSnapshot(value: unknown): RunSnapshot | undefined {
 		channelDir: item.channelDir,
 		createdAt: item.createdAt,
 		updatedAt: item.updatedAt,
+		...(typeof item.closedAt === "number" ? { closedAt: item.closedAt } : {}),
 		...(typeof item.subSessionId === "string" ? { subSessionId: item.subSessionId } : {}),
 		...(typeof item.subSessionFile === "string" ? { subSessionFile: item.subSessionFile } : {}),
 		...(item.surface ? { surface: item.surface } : {}),
@@ -53,27 +56,37 @@ export class MainRunManager {
 	readonly runs = new Map<string, RunSnapshot>();
 	private readonly titles = new Map<string, string>();
 	private readonly adapters: AdapterRegistry;
-	private readonly seenMessages = new Set<string>();
-	private poller?: ReturnType<typeof setInterval>;
+	private readonly closedRuns = new Map<string, RunSnapshot>();
+	private readonly pollErrors = new ProtocolErrors();
+	private readonly monitor: ChannelMonitor;
+	private eventsBound = false;
 	private ctx?: ExtensionContext;
 
 	constructor(private readonly pi: ExtensionAPI) {
 		this.adapters = new AdapterRegistry(pi);
+		this.monitor = new ChannelMonitor(
+			(ids) => this.poll(ids),
+			(id, error) => {
+				if (this.ctx) this.pollErrors.report(this.ctx, `watch:${id}`, new Error(`File watching unavailable; the 5-second scan remains active. ${error instanceof Error ? error.message : String(error)}`));
+			},
+			(id) => this.pollErrors.clear(`watch:${id}`),
+		);
 	}
 
 	start(ctx: ExtensionContext): void {
 		this.ctx = ctx;
-		this.restore(ctx);
-		this.poll();
-		if (!this.poller) {
-			this.poller = setInterval(() => this.poll(), POLL_MS);
-			this.poller.unref?.();
+		if (!this.eventsBound) {
+			bindInboxEvents(this.pi, () => this.ctx, () => this.monitor.wakeAll());
+			this.eventsBound = true;
 		}
+		this.restore(ctx);
+		for (const run of [...this.runs.values(), ...this.closedRuns.values()]) this.monitor.add(run.runId, run.channelDir, "to-main");
+		this.monitor.start();
+		this.poll();
 	}
 
 	shutdown(): void {
-		if (this.poller) clearInterval(this.poller);
-		this.poller = undefined;
+		this.monitor.stop();
 		this.ctx = undefined;
 	}
 
@@ -86,15 +99,25 @@ export class MainRunManager {
 		}
 		for (const run of latest.values()) {
 			this.titles.set(run.runId, run.title);
-			if (fs.existsSync(run.channelDir)) this.runs.set(run.runId, run);
+			if (fs.existsSync(run.channelDir)) {
+				(run.closedAt === undefined ? this.runs : this.closedRuns).set(run.runId, run);
+			}
 		}
 	}
 
 	private save(run: RunSnapshot): void {
 		run.updatedAt = Date.now();
-		this.runs.set(run.runId, run);
+		if (run.closedAt === undefined) {
+			this.runs.set(run.runId, run);
+			this.closedRuns.delete(run.runId);
+		} else {
+			this.runs.delete(run.runId);
+			this.closedRuns.set(run.runId, run);
+		}
 		this.titles.set(run.runId, run.title);
 		this.pi.appendEntry(RUN_ENTRY, { ...run });
+		this.monitor.add(run.runId, run.channelDir, "to-main");
+		this.monitor.wake(run.runId);
 	}
 
 	titleFor(runId: string): string | undefined {
@@ -155,8 +178,8 @@ export class MainRunManager {
 			updatedAt: Date.now(),
 			...(resume ? { subSessionId: resume.sessionId, subSessionFile: resume.sessionFile } : {}),
 		};
-		this.save(run);
 		try {
+			this.save(run);
 			const adapter = await this.adapters.resolve();
 			const entryPath = fileURLToPath(new URL("./index.ts", import.meta.url));
 			run.surface = await adapter.launch({
@@ -180,8 +203,22 @@ export class MainRunManager {
 			this.save(run);
 			return run;
 		} catch (error) {
-			this.runs.delete(run.runId);
-			removeChannel(run.channelDir);
+			let cleanupFailure: unknown;
+			if (error instanceof HerdrLaunchCleanupError) {
+				run.surface = error.handle;
+				cleanupFailure = error;
+			} else if (run.surface) {
+				try { await this.adapters.close(run.surface); } catch (cleanup) { cleanupFailure = cleanup; }
+			}
+			if (cleanupFailure) {
+				let persistenceFailure = "";
+				try { this.save(run); } catch (persist) { persistenceFailure = ` Recovery state could not be persisted: ${persist instanceof Error ? persist.message : String(persist)}.`; }
+				const original = error instanceof Error ? error.message : String(error);
+				const cleanup = cleanupFailure instanceof Error ? cleanupFailure.message : String(cleanupFailure);
+				const failure = error === cleanupFailure ? original : `${original} Cleanup failed: ${cleanup}`;
+				throw new Error(`${failure} Sub run ${run.runId} remains open.${persistenceFailure} Use close_sub to retry.`, { cause: error });
+			}
+			this.retainClosed(run, "The Sub launch did not complete.");
 			throw error;
 		}
 	}
@@ -225,45 +262,72 @@ export class MainRunManager {
 			writeClose(run.channelDir, manifest, reason);
 		} catch {}
 		await this.adapters.close(run.surface);
-		this.runs.delete(run.runId);
-		removeChannel(run.channelDir);
+		this.retainClosed(run, reason);
 		return run;
 	}
 
-	private poll(): void {
-		for (const run of this.runs.values()) {
-			let manifest: DelegateManifest;
-			try { manifest = readManifest(run.channelDir); } catch { continue; }
-			const session = readSubSessionInfo(run.channelDir, manifest);
-			if (session && (run.subSessionId !== session.sessionId || run.subSessionFile !== session.sessionFile)) {
-				run.subSessionId = session.sessionId;
-				run.subSessionFile = session.sessionFile;
-				this.save(run);
-			}
-			if (readSubClosed(run.channelDir, manifest)) {
-				this.runs.delete(run.runId);
-				removeChannel(run.channelDir);
-				continue;
-			}
-			if (!this.ctx?.isIdle()) continue;
-			for (const message of listTalkToMain(run.channelDir, manifest)) {
-				const key = `${run.runId}:${message.id}`;
-				if (this.seenMessages.has(key)) continue;
-				this.seenMessages.add(key);
-				this.notify(run, message.message);
-				removeTalk(run.channelDir, "to-main", message.id);
+	private retainClosed(run: RunSnapshot, reason: string): void {
+		run.closedAt = Date.now();
+		try {
+			const manifest = readManifest(run.channelDir);
+			// Preserve the closure fact even if session persistence later fails.
+			writeSubClosed(run.channelDir, manifest, reason);
+			if (listTalkToMain(run.channelDir, manifest).length === 0) {
+				this.finishClosed(run);
 				return;
 			}
-		}
+		} catch (error) { this.reportChannelError(run, error); }
+		// A closed surface with a pending or broken inbox is not an open Sub.
+		this.save(run);
 	}
 
-	private notify(run: RunSnapshot, message: string): void {
-		this.pi.sendMessage({
-			customType: MESSAGE_TYPE,
-			content: `[Facets Sub message]\nSub '${run.title}' (${run.runId}) says:\n${message}\n\nUse talk with runId '${run.runId}' to respond, or close_sub when the delivery is accepted and no more work is needed.`,
-			display: true,
-			details: { title: run.title, message },
-		}, { deliverAs: "followUp", triggerTurn: true });
+	private reportChannelError(run: RunSnapshot, error: unknown): void {
+		if (this.ctx) this.pollErrors.report(this.ctx, run.runId, error);
+		else console.error(`Facets channel error (${run.runId}): ${error instanceof Error ? error.message : String(error)}`);
+	}
+
+	private finishClosed(run: RunSnapshot): void {
+		removeChannel(run.channelDir);
+		this.monitor.remove(run.runId);
+		this.runs.delete(run.runId);
+		this.closedRuns.delete(run.runId);
+		this.pollErrors.clear(run.runId);
+	}
+
+	private poll(ids?: string[]): void {
+		const ctx = this.ctx;
+		if (!ctx) return;
+		const runs = ids ? ids.flatMap((id) => {
+			const run = this.runs.get(id) ?? this.closedRuns.get(id);
+			return run ? [run] : [];
+		}) : [...this.runs.values(), ...this.closedRuns.values()];
+		for (const run of runs) {
+			try {
+				const manifest = readManifest(run.channelDir);
+				if (manifest.runId !== run.runId || manifest.mainSessionId !== run.mainSessionId) throw new Error("Channel manifest identity mismatch.");
+				const session = readSubSessionInfo(run.channelDir, manifest);
+				if (session && (run.subSessionId !== session.sessionId || run.subSessionFile !== session.sessionFile)) {
+					run.subSessionId = session.sessionId;
+					run.subSessionFile = session.sessionFile;
+					this.save(run);
+				}
+				if (run.closedAt === undefined && readSubClosed(run.channelDir, manifest)) {
+					run.closedAt = Date.now();
+					this.save(run);
+				}
+				const messages = listTalkToMain(run.channelDir, manifest);
+				let pending = messages.length;
+				for (const message of messages) {
+					const content = `[Facets Sub message]\nSub '${run.title}' (${run.runId}) says:\n${message.message}\n\n${run.closedAt === undefined ? `Use talk with runId '${run.runId}' to respond, or close_sub when the delivery is accepted and no more work is needed.` : "This Sub has already closed; this is a retained final delivery."}`;
+					const result = deliverTalk(this.pi, ctx, run.channelDir, manifest, "to-main", message, content);
+					if (result === "acknowledged") pending--;
+				}
+				if (run.closedAt !== undefined && pending === 0) this.finishClosed(run);
+				this.pollErrors.clear(run.runId);
+			} catch (error) {
+				this.pollErrors.report(ctx, run.runId, error);
+			}
+		}
 	}
 }
 

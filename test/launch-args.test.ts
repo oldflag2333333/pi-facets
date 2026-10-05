@@ -16,6 +16,15 @@ const profile: ResolvedProfile = {
 	resolvedExtensions: ["/tmp/web-extension.ts"],
 };
 
+test("keeps built-in extension specs intact and deduplicates explicit loads", () => {
+	const args = subCapabilityArgs({
+		...profile,
+		tools: ["read", "codemode", "tool_search"],
+		resolvedExtensions: ["builtin:codemode", "builtin:tool-search", "builtin:codemode", "/tmp/facets.ts"],
+	}, "/tmp/facets.ts");
+	assert.deepEqual(args.slice(0, 6), ["-e", "builtin:codemode", "-e", "builtin:tool-search", "--tools", "read,codemode,tool_search,talk"]);
+});
+
 test("builds one Sub capability argument set from the resolved profile", () => {
 	assert.deepEqual(subCapabilityArgs(profile, "/tmp/facets.ts"), [
 		"-e", "/tmp/web-extension.ts",

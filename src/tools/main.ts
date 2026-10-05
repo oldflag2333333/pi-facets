@@ -52,6 +52,7 @@ export function registerMainTools(pi: ExtensionAPI, manager: MainRunManager): vo
 	pi.registerTool({
 		name: "delegate",
 		label: "delegate",
+		exposure: "model-only",
 		description: "Create a fresh, context-isolated Sub Pi in Herdr, or resume a previous persistent Sub session by session ID. The Sub remains open until the Main calls close_sub or the user closes it manually.",
 		promptSnippet: "Create or resume a focused Sub Pi in Herdr with an explicit Facets profile",
 		promptGuidelines: [
@@ -104,7 +105,11 @@ export function registerMainTools(pi: ExtensionAPI, manager: MainRunManager): vo
 			const action = args.resumeSessionId ? "resume" : "delegate";
 			return new Text(`${theme.fg("toolTitle", theme.bold(action))} ${theme.fg("muted", `· ${title}`)}`, 0, 0);
 		},
-		renderResult(result, { isPartial }, theme) {
+		renderResult(result, { isPartial }, theme, context) {
+			if (context.isError) {
+				const message = result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+				return new Text(theme.fg("error", message || "delegate failed"), 0, 0);
+			}
 			const details = result.details as {
 				title?: string;
 				profile?: string;
@@ -124,7 +129,7 @@ export function registerMainTools(pi: ExtensionAPI, manager: MainRunManager): vo
 	pi.registerTool({
 		name: "talk",
 		label: "talk",
-		description: "Send one message to an existing Sub Pi. The Sub receives queued messages in order when it is idle. Format non-trivial messages as readable Markdown with paragraph breaks and lists.",
+		description: "Send one message to an existing Sub Pi. Messages enter the Sub's native follow-up queue and are processed after its current work. Format non-trivial messages as readable Markdown with paragraph breaks and lists.",
 		promptSnippet: "Send a message to an existing Sub Pi",
 		executionMode: "sequential",
 		parameters: Type.Object({
@@ -146,7 +151,7 @@ export function registerMainTools(pi: ExtensionAPI, manager: MainRunManager): vo
 		async execute(_id, params) {
 			const { run, messageId } = manager.talk(params.runId, params.message);
 			return {
-				content: [{ type: "text", text: `Message delivered to Sub: ${run.title}` }],
+				content: [{ type: "text", text: `Message queued for Sub: ${run.title}` }],
 				details: { runId: run.runId, messageId },
 			};
 		},

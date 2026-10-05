@@ -2,6 +2,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+import { bindPromptSections } from "./profiles/system-prompt.js";
+
 const MAIN_CONTEXT_FILE = "MAIN.md";
 const MAX_MAIN_CONTEXT_BYTES = 256 * 1024;
 
@@ -71,10 +73,7 @@ export function loadMainContext(cwd: string, includeProject: boolean): MainConte
 export class MainContextRuntime {
 	private content = "";
 
-	constructor(
-		private readonly pi: ExtensionAPI,
-		private readonly shouldAppend: () => boolean = () => true,
-	) {}
+	constructor(private readonly pi: ExtensionAPI) {}
 
 	register(): void {
 		this.pi.on("session_start", (_event, ctx) => {
@@ -87,9 +86,6 @@ export class MainContextRuntime {
 			}
 		});
 
-		this.pi.on("before_agent_start", (event) => {
-			if (!this.content || !this.shouldAppend()) return;
-			return { systemPrompt: `${event.systemPrompt}\n\n${this.content}` };
-		});
+		bindPromptSections(this.pi, ["facets_main"], (): Record<string, string> => this.content ? { facets_main: this.content } : {});
 	}
 }
