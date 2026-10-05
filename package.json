@@ -1,6 +1,6 @@
 {
   "name": "pi-facets",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Reusable Pi capability profiles plus context-isolated delegation and pluggable Sub surfaces",
   "type": "module",
   "license": "MIT",
