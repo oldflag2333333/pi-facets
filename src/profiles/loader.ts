@@ -224,6 +224,45 @@ function resolveSkill(reference: string, profile: LoadedProfile, cwd: string, in
 	throw new Error(`Profile '${profile.name}' references unknown skill '${reference}'.`);
 }
 
+/** Discover only the selected directory profile's private skills, never sibling profiles. */
+function discoverProfileSkills(profile: LoadedProfile): string[] {
+	// Legacy profiles share a parent directory and must not scan its skills folder.
+	if (path.basename(profile.sourcePath) !== PROFILE_CONFIG_FILE
+		|| path.basename(path.dirname(profile.sourcePath)) !== profile.name) return [];
+	const root = path.join(path.dirname(profile.sourcePath), "skills");
+	const skills: string[] = [];
+	const visited = new Set<string>();
+	function visit(directory: string, isRoot: boolean): void {
+		let realPath: string;
+		try {
+			realPath = fs.realpathSync(directory);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+			throw error;
+		}
+		if (visited.has(realPath)) return;
+		visited.add(realPath);
+		const entry = skillCandidate(path.join(directory, "SKILL.md"));
+		if (entry) {
+			skills.push(entry);
+			return; // Supporting Markdown and nested assets are not separate skills.
+		}
+		for (const name of fs.readdirSync(directory).sort()) {
+			if (name.startsWith(".") || name === "node_modules") continue;
+			const file = path.join(directory, name);
+			let stat: fs.Stats;
+			try { stat = fs.statSync(file); } catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+				throw error;
+			}
+			if (stat.isDirectory()) visit(file, false);
+			else if (isRoot && stat.isFile() && name.endsWith(".md")) skills.push(file);
+		}
+	}
+	visit(root, true);
+	return skills;
+}
+
 export function resolveProfile(name: string, cwd: string, includeProject: boolean): ResolvedProfile {
 	const catalog = loadProfiles(cwd, includeProject);
 	const invalid = catalog.diagnostics.map((item) => `${item.path}: ${item.message}`);
@@ -233,9 +272,20 @@ export function resolveProfile(name: string, cwd: string, includeProject: boolea
 		const suffix = invalid.length > 0 ? ` Invalid profiles: ${invalid.join("; ")}` : "";
 		throw new Error(`Unknown Facets profile '${name}'. Available: ${available}.${suffix}`);
 	}
+	const skillPaths = [
+		...discoverProfileSkills(profile),
+		...(profile.skills ?? []).map((skill) => resolveSkill(skill, profile, cwd, includeProject)),
+	];
+	const seen = new Set<string>();
+	const resolvedSkills = skillPaths.filter((skill) => {
+		const realPath = fs.realpathSync(skill);
+		if (seen.has(realPath)) return false;
+		seen.add(realPath);
+		return true;
+	}).map(materializeProfileSkill);
 	return {
 		...profile,
-		resolvedSkills: (profile.skills ?? []).map((skill) => materializeProfileSkill(resolveSkill(skill, profile, cwd, includeProject))),
+		resolvedSkills,
 		resolvedExtensions: [],
 	};
 }

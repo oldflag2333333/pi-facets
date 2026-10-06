@@ -216,6 +216,59 @@ test("retains user-selected explicit skill paths without project discovery", () 
 	}
 });
 
+function writeSkill(file: string, name = "private-review", manual = false): string {
+	fs.mkdirSync(path.dirname(file), { recursive: true });
+	fs.writeFileSync(file, `---\nname: ${name}\ndescription: Private review\ndisable-model-invocation: ${manual}\n---\n`);
+	return file;
+}
+
+test("automatically discovers private skills, merges explicit skills, and deduplicates paths", () => {
+	const dir = writeDirectoryProfile(globalProfilesDir(), "reviewer", {
+		version: 1, name: "reviewer", tools: ["read"],
+		skills: ["./skills/review", "shared"],
+	});
+	const privateSkill = writeSkill(path.join(dir, "skills", "review", "SKILL.md"));
+	writeSkill(path.join(dir, "skills", "review", "assets", "SKILL.md"), "asset");
+	const standalone = writeSkill(path.join(dir, "skills", "standalone.md"), "standalone");
+	const nested = writeSkill(path.join(dir, "skills", "group", "nested", "SKILL.md"), "nested");
+	const shared = writeSkill(path.join(process.env.PI_CODING_AGENT_DIR!, "skills", "shared", "SKILL.md"), "shared");
+	fs.symlinkSync(path.join(dir, "skills"), path.join(dir, "skills", "loop"), "dir");
+	const other = writeDirectoryProfile(globalProfilesDir(), "writer", { version: 1, name: "writer", tools: ["read"] });
+	writeSkill(path.join(other, "skills", "writer", "SKILL.md"), "writer");
+	assert.deepEqual(resolveProfile("reviewer", cwd, false).resolvedSkills, [nested, privateSkill, standalone, shared]);
+});
+
+test("private skills follow profile overrides and project trust without inheritance", () => {
+	const definition = { version: 1, name: "reviewer", tools: ["read"] };
+	const global = writeDirectoryProfile(globalProfilesDir(), "reviewer", definition);
+	const globalSkill = writeSkill(path.join(global, "skills", "global", "SKILL.md"), "global");
+	const project = writeDirectoryProfile(projectProfilesDir(cwd), "reviewer", definition);
+	const projectSkill = writeSkill(path.join(project, "skills", "project", "SKILL.md"), "project");
+	const nestedCwd = path.join(cwd, "workspace");
+	fs.mkdirSync(nestedCwd);
+	assert.deepEqual(resolveProfile("reviewer", nestedCwd, false).resolvedSkills, [globalSkill]);
+	assert.deepEqual(resolveProfile("reviewer", nestedCwd, true).resolvedSkills, [projectSkill]);
+	fs.rmSync(path.join(project, "skills"), { recursive: true });
+	assert.deepEqual(resolveProfile("reviewer", nestedCwd, true).resolvedSkills, []);
+});
+
+test("legacy profiles do not automatically load a shared sibling skills directory", () => {
+	writeJson(path.join(globalProfilesDir(), "reviewer.json"), { version: 1, name: "reviewer", tools: ["read"] });
+	writeSkill(path.join(globalProfilesDir(), "skills", "private", "SKILL.md"));
+	assert.deepEqual(resolveProfile("reviewer", cwd, false).resolvedSkills, []);
+});
+
+test("auto-loaded private manual skills remain model-visible and preserve assets", () => {
+	const dir = writeDirectoryProfile(globalProfilesDir(), "reviewer", { version: 1, name: "reviewer", tools: ["read"] });
+	const skill = writeSkill(path.join(dir, "skills", "review", "SKILL.md"), "review", true);
+	fs.writeFileSync(path.join(path.dirname(skill), "guide.md"), "private guide");
+	const [resolved] = resolveProfile("reviewer", cwd, false).resolvedSkills;
+	assert.ok(resolved);
+	assert.match(fs.readFileSync(resolved, "utf8"), /disable-model-invocation: false/);
+	assert.match(fs.readFileSync(skill, "utf8"), /disable-model-invocation: true/);
+	assert.equal(fs.readFileSync(path.join(path.dirname(resolved), "guide.md"), "utf8"), "private guide");
+});
+
 test("reports invalid profiles and does not load them", () => {
 	writeJson(path.join(globalProfilesDir(), "wrong-name.json"), {
 		version: 1,

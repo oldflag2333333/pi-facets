@@ -75,6 +75,26 @@ pi --profile reviewer
 
 For strict skill selection in a directly started Pi, also pass `--no-skills`; Facets contributes only the selected profile's skill paths. Delegated Subs always use `--no-skills` plus the resolved profile skills.
 
+### Profile-private skills
+
+Directory profiles automatically load skills from their own `skills/` folder:
+
+```text
+~/.pi/agent/facets/profiles/reviewer/
+├── config.json
+└── skills/
+    └── code-review/
+        ├── SKILL.md
+        └── references/
+            └── checklist.md
+```
+
+The same layout works under trusted project `.pi/facets/profiles/`. No `skills` config entry is required, even when the field is omitted or `[]`. Only selecting this profile (via `--profile` or `delegate`) contributes these skills; other profiles and an unprofiled Main do not automatically receive them. This is discovery isolation, not a filesystem access restriction.
+
+Facets recursively discovers `SKILL.md` directories, stopping at each skill root so supporting files are not treated as skills. Standalone `.md` files directly inside `skills/` are also supported; hidden directories and `node_modules` are skipped. Private skills precede explicit `skills` references, with duplicate source files removed (including symlinks). Pi handles skill validation and same-name collisions using its first-loaded-wins rule. For startup profiles, ambient skills may still take precedence unless `--no-skills` is passed.
+
+Profile overrides replace the entire private skill set: a project profile does not inherit a global profile's skills. Legacy `profiles/<name>.json` files do not auto-discover private skills; migrate to `<name>/config.json` or keep using explicit paths. Private skills use the same model-visibility and asset-preservation behavior as explicitly selected skills. Reload a startup profile with `/reload`; already launched Subs retain their resolved skill selection.
+
 For delegated Subs, Facets resolves profile tools through Pi's canonical `sourceInfo.path` and loads only the extensions that own those tools. Native tools such as `read` and `bash` need no extension; selected `codemode` and `tool_search` tools explicitly load `builtin:codemode` and `builtin:tool-search`, because `--no-extensions` also disables built-in extensions in Pi 1.0. It does not inherit unrelated ambient extensions. Ambient built-in MCP tools are rejected before launch: isolated MCP server selection is not implemented, and loading all configured servers would widen the profile's capabilities. In-memory SDK tools without a loadable extension path are also rejected.
 
 ## Tools
