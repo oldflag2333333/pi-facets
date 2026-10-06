@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createChannel, MESSAGE_TYPE, readManifest, talkToMain } from "../src/channel.js";
+import { createChannel, readManifest, talkToMain } from "../src/channel.js";
 import { bindInboxEvents } from "../src/inbox-state.js";
 import { deliverTalk } from "../src/talk-delivery.js";
 
@@ -25,7 +25,7 @@ function fixture() {
 		signal: new AbortController().signal,
 	} as unknown as ExtensionContext;
 	const pi = { on: (event: string, handler: (...args: any[]) => unknown) => handlers.set(event, [...(handlers.get(event) ?? []), handler]),
-		sendMessage: (message: any) => sent.push(message),
+		sendUserMessage: (message: any) => sent.push(message),
 	} as unknown as ExtensionAPI;
 	let wakes = 0;
 	bindInboxEvents(pi, () => ctx, () => { wakes++; });
@@ -35,7 +35,7 @@ function fixture() {
 	return { channel, manifest, message, session, ctx, pi, sent, fire, send, wakes: () => wakes };
 }
 
-test("busy custom follow-ups enter the native queue once before being recorded", () => {
+test("busy user-message follow-ups enter the native queue once before being recorded", () => {
 	const f = fixture();
 	f.fire("agent_start");
 	assert.equal(f.send(), "sent");
@@ -46,21 +46,21 @@ test("busy custom follow-ups enter the native queue once before being recorded",
 
 test("failed submission remains retryable", () => {
 	const f = fixture();
-	const send = f.pi.sendMessage;
-	f.pi.sendMessage = () => { throw new Error("Cannot enqueue"); };
+	const send = f.pi.sendUserMessage;
+	f.pi.sendUserMessage = () => { throw new Error("Cannot enqueue"); };
 	assert.throws(f.send, /Cannot enqueue/);
-	f.pi.sendMessage = send;
+	f.pi.sendUserMessage = send;
 	assert.equal(f.send(), "sent");
 	assert.equal(f.sent.length, 1);
 });
 
-test("receipt leaves exactly one formal inbox record", () => {
+test("receipt leaves exactly one native user-message record", () => {
 	const f = fixture();
 	f.send();
 	const accepted = f.sent[0];
-	f.session.appendCustomMessageEntry(MESSAGE_TYPE, accepted.content, true, accepted.details);
+	f.session.appendMessage({ role: "user", content: accepted, timestamp: Date.now() });
 	assert.equal(f.send(), "acknowledged");
-	assert.equal(f.session.getEntries().filter((entry) => entry.type === "custom_message").length, 1);
+	assert.equal(f.session.getEntries().filter((entry) => entry.type === "message" && entry.message.role === "user").length, 1);
 	assert.equal(f.sent.length, 1);
 });
 
@@ -86,7 +86,7 @@ test("normal settlement retries withdrawn busy follow-ups, but abort alone does 
 	f.fire("agent_settled");
 	assert.equal(f.send(), "sent");
 	assert.equal(f.sent.length, 2);
-	assert.equal(f.wakes(), 2);
+	assert.equal(f.wakes(), 3);
 });
 
 test("abort before an assistant response also preserves in-flight state", () => {

@@ -2,7 +2,6 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
-import { materializeProfileSkill } from "./skill-visibility.js";
 import type {
 	LoadedProfile,
 	ProfileCatalog,
@@ -22,6 +21,7 @@ const ALLOWED_KEYS = new Set([
 	"model",
 	"thinkingLevel",
 	"sessionPersistence",
+	"invocation",
 	"tools",
 	"skills",
 	"instructions",
@@ -49,6 +49,9 @@ function parseProfile(value: unknown, expectedName: string): ProfileDefinition {
 	if (value.sessionPersistence !== undefined && value.sessionPersistence !== "ephemeral" && value.sessionPersistence !== "persistent") {
 		throw new Error("sessionPersistence must be 'ephemeral' or 'persistent'");
 	}
+	if (value.invocation !== undefined && value.invocation !== "both" && value.invocation !== "manual") {
+		throw new Error("invocation must be 'both' or 'manual'");
+	}
 	for (const key of ["description", "model", "thinkingLevel", "instructions"] as const) {
 		if (value[key] !== undefined && (typeof value[key] !== "string" || value[key].trim().length === 0)) {
 			throw new Error(`${key} must be a non-empty string`);
@@ -63,6 +66,7 @@ function parseProfile(value: unknown, expectedName: string): ProfileDefinition {
 		version: 1,
 		name: value.name,
 		tools: [...new Set(value.tools)],
+		...(value.invocation === "both" || value.invocation === "manual" ? { invocation: value.invocation } : {}),
 		...(typeof value.description === "string" ? { description: value.description } : {}),
 		...(typeof value.model === "string" ? { model: value.model } : {}),
 		...(typeof value.thinkingLevel === "string" ? { thinkingLevel: value.thinkingLevel } : {}),
@@ -263,14 +267,17 @@ function discoverProfileSkills(profile: LoadedProfile): string[] {
 	return skills;
 }
 
-export function resolveProfile(name: string, cwd: string, includeProject: boolean): ResolvedProfile {
+export function resolveProfile(name: string, cwd: string, includeProject: boolean, options: { agentOnly?: boolean } = {}): ResolvedProfile {
 	const catalog = loadProfiles(cwd, includeProject);
 	const invalid = catalog.diagnostics.map((item) => `${item.path}: ${item.message}`);
 	const profile = catalog.profiles.get(name);
 	if (!profile) {
-		const available = [...catalog.profiles.keys()].sort().join(", ") || "(none)";
-		const suffix = invalid.length > 0 ? ` Invalid profiles: ${invalid.join("; ")}` : "";
+		const available = [...catalog.profiles.values()].filter((item) => !options.agentOnly || item.invocation !== "manual").map((item) => item.name).sort().join(", ") || "(none)";
+		const suffix = !options.agentOnly && invalid.length > 0 ? ` Invalid profiles: ${invalid.join("; ")}` : "";
 		throw new Error(`Unknown Facets profile '${name}'. Available: ${available}.${suffix}`);
+	}
+	if (options.agentOnly && profile.invocation === "manual") {
+		throw new Error(`Profile '${name}' is user-invoked only. The user can start it with /sub:${name}; delegate cannot start it.`);
 	}
 	const skillPaths = [
 		...discoverProfileSkills(profile),
@@ -282,7 +289,7 @@ export function resolveProfile(name: string, cwd: string, includeProject: boolea
 		if (seen.has(realPath)) return false;
 		seen.add(realPath);
 		return true;
-	}).map(materializeProfileSkill);
+	});
 	return {
 		...profile,
 		resolvedSkills,

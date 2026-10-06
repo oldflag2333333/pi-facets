@@ -25,15 +25,18 @@ test("adds Main catalog and profile instructions as independent sections without
 	assert.equal(sections.facets_profile.split("Follow the profile instructions.").length, 2);
 });
 
-test("custom-message runs supplement only missing Facets sections without replacing native context", () => {
+test("contributes only through normal prompt assembly without a request-local fallback", () => {
 	const handlers = new Map<string, (...args: any[]) => any>();
 	const pi = { on: (event: string, callback: (...args: any[]) => any) => handlers.set(event, callback) } as unknown as ExtensionAPI;
-	bindPromptSections(pi, ["facets_profile"], () => ({ facets_profile: "Role instructions" }));
-	const original = [{ role: "system", content: "", sections: { preamble: "Native role", tools: "<tools>read</tools>" }, timestamp: 0 }, { role: "user", content: "Incoming task", timestamp: 1 }];
-	const result = handlers.get("context_with_system")!({ messages: original });
-	assert.deepEqual(result.messages.slice(0, 2), original);
-	assert.deepEqual(result.messages[2].sections, { facets_profile: "<facets_profile>\nRole instructions\n</facets_profile>" });
-	assert.equal(handlers.get("context_with_system")!({ messages: result.messages }), undefined);
+	let instructions = "Role instructions";
+	bindPromptSections(pi, ["facets_profile"], () => ({ facets_profile: instructions }));
+	assert.deepEqual([...handlers.keys()], ["before_agent_start"]);
+	const sections: Record<string, string> = { ...nativeSections };
+	handlers.get("before_agent_start")!({ systemPromptOptions: { sections } });
+	assert.deepEqual(sections, { ...nativeSections, facets_profile: instructions });
+	instructions = "";
+	handlers.get("before_agent_start")!({ systemPromptOptions: { sections } });
+	assert.deepEqual(sections, nativeSections);
 });
 
 test("a Main without a selected profile still receives the profile catalog", () => {

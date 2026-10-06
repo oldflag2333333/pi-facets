@@ -21,10 +21,13 @@ import {
 } from "./channel.js";
 import type { ResolvedProfile } from "./profiles/types.js";
 import { listResumableSubSessions, resolveResumableSubSession } from "./sessions.js";
+import { MANUAL_MAIN_GUIDANCE } from "./manual-context.js";
 import { deliverTalk, ProtocolErrors } from "./talk-delivery.js";
 import type { RunSnapshot, SubAgentStatus } from "./types.js";
 
 const RUN_ENTRY = "facets-run";
+const MANUAL_BINDING_ENTRY = "facets-manual-profile";
+export const MAX_OPEN_SUBS = 4;
 
 function parseSnapshot(value: unknown): RunSnapshot | undefined {
 	if (!value || typeof value !== "object") return;
@@ -41,6 +44,8 @@ function parseSnapshot(value: unknown): RunSnapshot | undefined {
 		title: item.title,
 		cwd: item.cwd,
 		profileName: item.profileName,
+		...(item.origin === "manual" ? { origin: "manual" as const } : {}),
+		...(typeof item.purpose === "string" ? { purpose: item.purpose } : {}),
 		sessionPersistence: item.sessionPersistence === "persistent" ? "persistent" : "ephemeral",
 		channelDir: item.channelDir,
 		createdAt: item.createdAt,
@@ -61,6 +66,11 @@ export class MainRunManager {
 	private readonly monitor: ChannelMonitor;
 	private eventsBound = false;
 	private ctx?: ExtensionContext;
+	private sessionId?: string;
+	private readonly history = new Map<string, RunSnapshot>();
+	private readonly manualBindings = new Map<string, string>();
+	private manualQueue: Promise<void> = Promise.resolve();
+	private manualLifetime = new AbortController();
 
 	constructor(private readonly pi: ExtensionAPI) {
 		this.adapters = new AdapterRegistry(pi);
@@ -74,6 +84,18 @@ export class MainRunManager {
 	}
 
 	start(ctx: ExtensionContext): void {
+		const sessionId = ctx.sessionManager.getSessionId();
+		if (this.sessionId && this.sessionId !== sessionId) {
+			this.manualLifetime.abort();
+			this.monitor.stop();
+			this.runs.clear();
+			this.closedRuns.clear();
+			this.titles.clear();
+			this.history.clear();
+			this.manualBindings.clear();
+		}
+		if (this.manualLifetime.signal.aborted) this.manualLifetime = new AbortController();
+		this.sessionId = sessionId;
 		this.ctx = ctx;
 		if (!this.eventsBound) {
 			bindInboxEvents(this.pi, () => this.ctx, () => this.monitor.wakeAll());
@@ -86,6 +108,7 @@ export class MainRunManager {
 	}
 
 	shutdown(): void {
+		this.manualLifetime.abort();
 		this.monitor.stop();
 		this.ctx = undefined;
 	}
@@ -93,11 +116,18 @@ export class MainRunManager {
 	private restore(ctx: ExtensionContext): void {
 		const latest = new Map<string, RunSnapshot>();
 		for (const entry of ctx.sessionManager.getEntries()) {
+			if (entry.type === "custom" && entry.customType === MANUAL_BINDING_ENTRY) {
+				const binding = entry.data as { mainSessionId?: string; profileName?: string; runId?: string } | undefined;
+				if (binding?.mainSessionId === ctx.sessionManager.getSessionId() && typeof binding.profileName === "string" && typeof binding.runId === "string") {
+					this.manualBindings.set(binding.profileName, binding.runId);
+				}
+			}
 			if (entry.type !== "custom" || entry.customType !== RUN_ENTRY) continue;
 			const snapshot = parseSnapshot(entry.data);
-			if (snapshot) latest.set(snapshot.runId, snapshot);
+			if (snapshot && (snapshot.origin !== "manual" || snapshot.mainSessionId === ctx.sessionManager.getSessionId())) latest.set(snapshot.runId, snapshot);
 		}
 		for (const run of latest.values()) {
+			this.history.set(run.runId, run);
 			this.titles.set(run.runId, run.title);
 			if (fs.existsSync(run.channelDir)) {
 				(run.closedAt === undefined ? this.runs : this.closedRuns).set(run.runId, run);
@@ -107,6 +137,7 @@ export class MainRunManager {
 
 	private save(run: RunSnapshot): void {
 		run.updatedAt = Date.now();
+		this.history.set(run.runId, run);
 		if (run.closedAt === undefined) {
 			this.runs.set(run.runId, run);
 			this.closedRuns.delete(run.runId);
@@ -144,9 +175,12 @@ export class MainRunManager {
 		cwd: string;
 		profile: ResolvedProfile;
 		resumeSessionId?: string;
+		origin?: "manual";
 	}, signal?: AbortSignal): Promise<RunSnapshot> {
 		if (!this.ctx) throw new Error("Facets is not attached to an active Main session.");
-		const resume = input.resumeSessionId ? await resolveResumableSubSession(input.resumeSessionId) : undefined;
+		if (input.profile.invocation === "manual" && input.origin !== "manual") throw new Error("This profile is user-invoked only; use its slash command.");
+		if (this.runs.size >= MAX_OPEN_SUBS) throw new Error(`Facets allows at most ${MAX_OPEN_SUBS} open Subs.`);
+		const resume = input.resumeSessionId ? await resolveResumableSubSession(input.resumeSessionId, input.origin === "manual") : undefined;
 		if (resume && input.profile.sessionPersistence !== "persistent") {
 			throw new Error(`Profile '${input.profile.name}' must use sessionPersistence 'persistent' when resuming a Sub session.`);
 		}
@@ -164,6 +198,7 @@ export class MainRunManager {
 			task: input.task,
 			cwd,
 			profile: input.profile,
+			...(input.origin ? { origin: input.origin } : {}),
 		});
 		const run: RunSnapshot = {
 			version: 1,
@@ -172,6 +207,7 @@ export class MainRunManager {
 			title: input.title,
 			cwd,
 			profileName: input.profile.name,
+			...(input.origin ? { origin: input.origin, purpose: input.profile.description } : {}),
 			sessionPersistence: input.profile.sessionPersistence ?? "ephemeral",
 			channelDir: channel.channelDir,
 			createdAt: Date.now(),
@@ -189,6 +225,7 @@ export class MainRunManager {
 				task: input.task,
 				cwd,
 				projectTrusted,
+				...(input.origin ? { origin: input.origin } : {}),
 				...(resume ? { resumeSessionId: resume.sessionId } : {}),
 				profile: input.profile,
 				channelDir: channel.channelDir,
@@ -201,6 +238,10 @@ export class MainRunManager {
 				run.subSessionFile = session.sessionFile;
 			}
 			this.save(run);
+			if (input.origin === "manual") {
+				this.pi.appendEntry(MANUAL_BINDING_ENTRY, { mainSessionId, profileName: input.profile.name, runId });
+				this.manualBindings.set(input.profile.name, runId);
+			}
 			return run;
 		} catch (error) {
 			let cleanupFailure: unknown;
@@ -223,6 +264,61 @@ export class MainRunManager {
 		}
 	}
 
+	/** Commands serialize launch/reuse so two invocations cannot create two sessions. */
+	invokeProfile(input: { profile: ResolvedProfile; task: string; cwd: string }): Promise<{ run: RunSnapshot; action: "created" | "resumed" | "queued" }> {
+		const owner = this.ctx?.sessionManager.getSessionId();
+		const signal = this.manualLifetime.signal;
+		const pending = this.manualQueue.then(async () => {
+			signal.throwIfAborted();
+			if (!owner || this.ctx?.sessionManager.getSessionId() !== owner) throw new Error("The Main session changed before the profile command ran.");
+			const recoverable = [...this.runs.values()].filter((run) => run.origin === "manual" && run.mainSessionId === owner && run.profileName === input.profile.name);
+			if (recoverable.length > 1) throw new Error("Multiple manual runs need cleanup before this profile can be invoked again.");
+			const bound = this.manualBindings.get(input.profile.name) ?? recoverable[0]?.runId;
+			const previous = bound ? this.history.get(bound) : undefined;
+			if (bound && (!previous || previous.mainSessionId !== owner || previous.origin !== "manual" || previous.profileName !== input.profile.name)) throw new Error("The saved profile binding is unavailable; refusing to create a replacement session.");
+			if (previous && fs.existsSync(previous.channelDir)) {
+				const manifest = readManifest(previous.channelDir);
+				const session = readSubSessionInfo(previous.channelDir, manifest);
+				if (session) {
+					previous.subSessionId = session.sessionId;
+					previous.subSessionFile = session.sessionFile;
+					this.save(previous);
+				}
+				if (previous.closedAt === undefined && readSubClosed(previous.channelDir, manifest)) {
+					this.retainClosed(previous, "The user-invoked Sub was closed.");
+				}
+			}
+			const task = `[User-invoked profile: ${input.profile.name}]\nThe user explicitly requests this task:\n${input.task}`;
+			if (previous && previous.closedAt === undefined && fs.existsSync(previous.channelDir)) {
+				const status = await this.adapters.status(previous.surface);
+				if (status === "unknown") {
+					if (await this.adapters.exists(previous.surface) !== false) throw new Error("Cannot verify the existing Sub is available. Close its tab before retrying; no duplicate session was created.");
+					this.retainClosed(previous, "Herdr confirmed that the Sub tab is closed.");
+				} else {
+					signal.throwIfAborted();
+					this.talk(previous.runId, task);
+					return { run: previous, action: "queued" as const };
+				}
+			}
+			if (previous && previous.closedAt === undefined && !fs.existsSync(previous.channelDir)) {
+				if (await this.adapters.exists(previous.surface) !== false) throw new Error("The existing Sub channel is missing and its tab is not confirmed closed; refusing to open the session twice.");
+				this.finishClosed(previous);
+			}
+			if (previous?.sessionPersistence === "persistent") {
+				if (input.profile.sessionPersistence !== "persistent") throw new Error("This profile already has a persistent binding; keep sessionPersistence set to persistent to reuse it.");
+				if (!previous.subSessionId) throw new Error("The previous Sub session ID was not recorded; refusing to create a replacement session.");
+			}
+			const resumeSessionId = previous?.sessionPersistence === "persistent" ? previous.subSessionId : undefined;
+			const run = await this.delegate({
+				title: input.profile.name, task, cwd: input.cwd, profile: input.profile, origin: "manual",
+				...(resumeSessionId ? { resumeSessionId } : {}),
+			}, signal);
+			return { run, action: resumeSessionId ? "resumed" as const : "created" as const };
+		});
+		this.manualQueue = pending.then(() => {}, () => {});
+		return pending;
+	}
+
 	talk(runId: string, message: string): { run: RunSnapshot; messageId: string } {
 		const run = this.findRun(runId);
 		const manifest = readManifest(run.channelDir);
@@ -240,9 +336,15 @@ export class MainRunManager {
 			Promise.all(runs.map(async (run) => ({ run, status: await this.adapters.status(run.surface) }))),
 			listResumableSubSessions(activeSessionIds),
 		]);
+		const manual = [...this.manualBindings.values()].flatMap((id) => {
+			const run = this.history.get(id);
+			return run?.subSessionId && run.subSessionFile && !activeSessionIds.has(run.subSessionId) && fs.existsSync(run.subSessionFile)
+				? [{ sessionId: run.subSessionId, sessionFile: run.subSessionFile, title: run.title, cwd: run.cwd, modifiedAt: run.updatedAt, origin: "manual" as const, profileName: run.profileName, purpose: run.purpose }]
+				: [];
+		});
 		return {
 			open: all ? open : open.filter(({ run, status }) => run.sessionPersistence === "persistent" || status === "working" || status === "blocked"),
-			resumable,
+			resumable: [...resumable, ...manual],
 		};
 	}
 
@@ -270,6 +372,8 @@ export class MainRunManager {
 		run.closedAt = Date.now();
 		try {
 			const manifest = readManifest(run.channelDir);
+			const session = readSubSessionInfo(run.channelDir, manifest);
+			if (session) { run.subSessionId = session.sessionId; run.subSessionFile = session.sessionFile; }
 			// Preserve the closure fact even if session persistence later fails.
 			writeSubClosed(run.channelDir, manifest, reason);
 			if (listTalkToMain(run.channelDir, manifest).length === 0) {
@@ -287,6 +391,10 @@ export class MainRunManager {
 	}
 
 	private finishClosed(run: RunSnapshot): void {
+		if (run.origin === "manual") {
+			run.closedAt ??= Date.now();
+			this.save(run); // Keep the persistent identity after the runtime channel is removed.
+		}
 		removeChannel(run.channelDir);
 		this.monitor.remove(run.runId);
 		this.runs.delete(run.runId);
@@ -318,7 +426,7 @@ export class MainRunManager {
 				const messages = listTalkToMain(run.channelDir, manifest);
 				let pending = messages.length;
 				for (const message of messages) {
-					const content = `[Facets Sub message]\nSub '${run.title}' (${run.runId}) says:\n${message.message}\n\n${run.closedAt === undefined ? `Use talk with runId '${run.runId}' to respond, or close_sub when the delivery is accepted and no more work is needed.` : "This Sub has already closed; this is a retained final delivery."}`;
+					const content = `[Facets Sub message]${run.origin === "manual" ? `\n[User-invoked specialist: ${run.profileName}]\n${run.purpose ? `Purpose: ${run.purpose}\n` : ""}${MANUAL_MAIN_GUIDANCE}` : ""}\nSub '${run.title}' (${run.runId}) says:\n${message.message}\n\n${run.closedAt === undefined ? `Use talk with runId '${run.runId}' to respond, or close_sub when the delivery is accepted and no more work is needed.` : "This Sub has already closed; this is a retained final delivery."}`;
 					const result = deliverTalk(this.pi, ctx, run.channelDir, manifest, "to-main", message, content);
 					if (result === "acknowledged") pending--;
 				}

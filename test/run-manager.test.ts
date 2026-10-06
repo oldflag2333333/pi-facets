@@ -7,6 +7,7 @@ import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earen
 import { createChannel, listTalkToSub, listTalkToMain, readInterrupt, readManifest, talkToMain, writeActiveTurn, writeSubSessionInfo, writeSubClosed } from "../src/channel.js";
 import { MainRunManager } from "../src/run-manager.js";
 import type { RunSnapshot } from "../src/types.js";
+import { readTalkReceipt } from "../src/talk-message.js";
 
 let root: string;
 let previousRuntimeDir: string | undefined;
@@ -109,7 +110,7 @@ test("talks to and explicitly closes an open Sub without triggering a Main turn"
 	const messages: unknown[] = [];
 	const pi = {
 		appendEntry: () => {},
-		sendMessage: (message: unknown) => messages.push(message),
+		sendUserMessage: (message: unknown) => messages.push(message),
 		exec: async (_command: string, args: string[]) => {
 			calls.push(args);
 			return { code: 0, stdout: "{}", stderr: "", killed: false };
@@ -138,9 +139,9 @@ test("queues a Sub message while Main is busy and acknowledges its receipt witho
 	const pi = {
 		on: () => () => {},
 		appendEntry: () => {},
-		sendMessage: (message: any, options: unknown) => {
+		sendUserMessage: (message: any, options: unknown) => {
 			messages.push({ message, options });
-			if (idle) receipts.appendCustomMessageEntry(message.customType, message.content, message.display, message.details);
+			if (idle) receipts.appendMessage({ role: "user", content: message, timestamp: Date.now() });
 		},
 	} as unknown as ExtensionAPI;
 	const manager = new MainRunManager(pi);
@@ -162,7 +163,7 @@ test("queues a Sub message while Main is busy and acknowledges its receipt witho
 	assert.equal(messages.length, 1);
 	const queued = messages[0]!.message as any;
 	idle = true;
-	receipts.appendCustomMessageEntry(queued.customType, queued.content, queued.display, queued.details);
+	receipts.appendMessage({ role: "user", content: queued, timestamp: Date.now() });
 	manager.start(ctx);
 	manager.shutdown();
 
@@ -171,9 +172,9 @@ test("queues a Sub message while Main is busy and acknowledges its receipt witho
 	assert.equal(messages.length, 1);
 	const notification = messages[0];
 	assert.ok(notification);
-	assert.deepEqual(notification.options, { deliverAs: "followUp", triggerTurn: true });
-	const delivered = notification.message as { content?: string; details?: { title?: string; message?: string } };
-	assert.match(String(delivered.content), /Review complete\./);
-	assert.deepEqual(delivered.details, { title: "Review MR", message: "Review complete.", direction: "to-main", runId: run.runId, messageId: sent.id });
+	assert.deepEqual(notification.options, { deliverAs: "followUp", expandPromptTemplates: false });
+	const delivered = notification.message as string;
+	assert.match(delivered, /Review complete\./);
+	assert.deepEqual(readTalkReceipt({ role: "user", content: delivered }), { direction: "to-main", runId: run.runId, messageId: sent.id });
 	assert.deepEqual(listTalkToMain(run.channelDir, readManifest(run.channelDir)), []);
 });

@@ -44,15 +44,21 @@ test("loads built-in extensions explicitly while leaving native tools alone", ()
 	assert.deepEqual(resolved.resolvedExtensions, ["builtin:codemode", "builtin:tool-search"]);
 });
 
-test("does not inherit ambient MCP servers or silently skip unknown built-ins", () => {
-	for (const sourcePath of ["builtin:mcp", "builtin:unknown"]) {
-		assert.throws(
-			() => resolveToolExtensions(profile(["mcp__server__search"]), [
-				{ name: "mcp__server__search", sourceInfo: { path: sourcePath, source: "builtin" } },
-			]),
-			/unsupported isolated built-in extension/,
-		);
-	}
+test("leaves MCP tools to Pi even before they connect in Main", () => {
+	const selected = profile(["mcp__server__search", "read_mcp_resource"]);
+	assert.deepEqual(resolveToolExtensions(selected, []).resolvedExtensions, []);
+	assert.deepEqual(resolveToolExtensions(selected, [
+		{ name: "mcp__server__search", sourceInfo: { path: "builtin:mcp", source: "builtin" } },
+	]).resolvedExtensions, []);
+});
+
+test("still reports unsupported non-MCP built-in extensions", () => {
+	assert.throws(
+		() => resolveToolExtensions(profile(["unknown"]), [
+			{ name: "unknown", sourceInfo: { path: "builtin:unknown", source: "builtin" } },
+		]),
+		/unsupported isolated built-in extension/,
+	);
 });
 
 test("rejects tools whose implementation cannot be recreated in a Sub process", () => {

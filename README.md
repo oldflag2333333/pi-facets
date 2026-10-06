@@ -12,7 +12,7 @@ Facets requires a supported interactive Sub surface. Herdr is currently the only
 
 > Status: early development MVP. The protocol and file channel are implemented; real-Herdr compatibility still needs end-to-end testing.
 
-Requires Node.js 22.19+ and targets Pi 1.0.2. The test suite includes real Pi SDK checks for isolated built-in extension loading and direct/nested tool policy enforcement.
+Requires Node.js 22.19+ and Pi 1.0.4+ (for native MCP tool-name patterns). The test suite includes real Pi SDK checks for isolated built-in extension loading, profile-selected Sub tool context, and native message delivery.
 
 ## Why the launch is asynchronous
 
@@ -63,17 +63,58 @@ Facets walks from the Main Pi working directory to the filesystem root. A profil
 }
 ```
 
-Profile `instructions` are additive. Facets uses Pi's mutable `systemPromptOptions.sections` API rather than replacing the full system prompt: Main contributes `facets_profiles` (capability catalog), `facets_profile` (selected profile instructions), and `facets_main` (`MAIN.md`); Sub contributes only `facets_sub_protocol` and `facets_profile`. Pi continues to assemble its native role, tool summaries, rules, documentation, project context, skills, and cwd according to the user's Pi configuration. Normal prompts record changed sections as transcript updates without repeating unchanged sections. Pi's idle custom-message runs bypass `before_agent_start`, so Facets also supplements missing or changed owned sections through `context_with_system` for those requests; this request-local fallback keeps profile instructions and the Sub protocol present without replacing native context.
+Profile `instructions` are additive. Facets uses Pi's mutable `systemPromptOptions.sections` API rather than replacing the full system prompt: Main contributes `facets_profiles` (capability catalog), `facets_profile` (selected profile instructions), and `facets_main` (`MAIN.md`); Sub contributes only `facets_sub_protocol` and `facets_profile`. Pi continues to assemble its native role, tool summaries, rules, documentation, project context, skills, and cwd according to the user's Pi configuration. Facets delivers `talk` through Pi's `sendUserMessage()` API. Idle deliveries use the normal input pipeline and `before_agent_start` prompt assembly, which records changed sections without repeating unchanged ones. Busy deliveries enter the native follow-up queue and reuse the active run's prompt sections, just like queued user input; they do not individually rerun `before_agent_start`. Facets does not patch model requests through `context_with_system`.
 
-`thinkingLevel` is passed to Pi rather than constrained by a Facets-owned enum. `sessionPersistence` is `ephemeral` by default or `persistent`: ephemeral conversations remain in memory only, while persistent conversations are saved by Pi and can later be resumed through `delegate.resumeSessionId`. Both remain open until the Main calls `close_sub` or the user closes the Herdr tab. Skill entries may be standard skill names or paths relative to the profile file. Named project skills are also resolved from the Main Pi working directory and its ancestors, but only when project resources are trusted. Untrusted projects cannot contribute automatically discovered named skills. User-configured explicit skill paths remain relative to the profile file and are still honored independently of project discovery. Selecting a skill in a profile is an explicit capability choice, so Facets makes it model-visible even when its source declares `disable-model-invocation: true`; the source is not modified, and relative skill assets remain available through a private runtime mirror. Valid profile names, scope, and descriptions are injected into the Main Pi system context only as a capability catalog, so it can select a profile without calling a discovery tool; Main routing policy belongs in `MAIN.md`. Users can still run `/profiles` for diagnostics; profiles cannot be switched inside a running session.
+`thinkingLevel` is passed to Pi rather than constrained by a Facets-owned enum. `sessionPersistence` is `ephemeral` by default or `persistent`: ephemeral conversations remain in memory only, while persistent conversations are saved by Pi and can later be resumed through `delegate.resumeSessionId` (agent-invokable sessions) or a user profile command (manual sessions). Both remain open until the Main calls `close_sub` or the user closes the Herdr tab. Skill entries may be standard skill names or paths relative to the profile file. Named project skills are also resolved from the Main Pi working directory and its ancestors, but only when project resources are trusted. Untrusted projects cannot contribute automatically discovered named skills. User-configured explicit skill paths remain relative to the profile file and are still honored independently of project discovery. Facets passes original skill paths to Pi without rewriting frontmatter or creating runtime mirrors. Pi's native visibility rules apply, including `disable-model-invocation: true`. For skills intended only for a specific profile, use the profile-private `skills/` directory rather than hiding a shared skill and overriding its visibility. Agent-invokable profile names, scope, and descriptions are injected into the Main Pi system context only as a capability catalog, so it can select a profile without calling a discovery tool; Main routing policy belongs in `MAIN.md`. Users can still run `/profiles` for diagnostics; profiles cannot be switched inside a running session.
 
-Starting Pi without `--profile` preserves Pi's existing model, thinking, tools, and skills. A selected profile replaces the active tool list exactly and enforces its tool allowlist through Pi's tool-call pipeline, including Codemode/nested calls and tools registered later. Pi's active tool set alone is not a capability boundary: registered `codemode`/`deferred` tools can remain callable while inactive. Profile initialization errors fail closed for tool execution. Include `delegate`, `talk`, `interrupt_sub`, `close_sub`, and `list_sub` in an orchestrator profile when those controls should remain available. To opt into a startup profile:
+Starting Pi without `--profile` preserves Pi's existing model, thinking, tools, and skills. A selected profile configures the non-MCP tool context, model, skills, and instructions; it is not a security policy and installs no tool-call permission guard. MCP tools and their discovery helpers are left outside profile selection. When starting Pi directly with `--profile`, already-loaded `codemode`/`deferred` tools may remain discoverable and callable even while inactive. Delegated Subs start with Pi's native `--tools` selection for non-MCP tools and only the profile's extensions plus built-in MCP support, keeping unrelated non-MCP tools out of their registry and Codemode listings. Invalid profile settings are still reported rather than silently ignored. Include `delegate`, `talk`, `interrupt_sub`, `close_sub`, and `list_sub` in an orchestrator profile when those controls should remain available. To opt into a startup profile:
 
 ```bash
 pi --profile reviewer
 ```
 
 For strict skill selection in a directly started Pi, also pass `--no-skills`; Facets contributes only the selected profile's skill paths. Delegated Subs always use `--no-skills` plus the resolved profile skills.
+
+### Manually invoked specialists
+
+Set `"invocation": "manual"` for a specialist the user, rather than Main, decides when to invoke. The default, `"both"`, allows both model delegation and user commands. For example, keep an `oracle` profile available to Main for architecture advice, but make company MR review an explicitly initiated workflow.
+
+`review/config.json`:
+
+```json
+{
+  "version": 1,
+  "name": "review",
+  "description": "Review a user-specified MR and report actionable findings; not general architecture consulting.",
+  "invocation": "manual",
+  "sessionPersistence": "persistent",
+  "tools": ["read", "bash"],
+  "instructions": "Review the requested MR. Report findings and related follow-ups to Main using talk. Do not modify code."
+}
+```
+
+After `/reload`, invoke the profile with its namespaced command:
+
+```text
+/sub:review Review MR 42
+```
+
+Typing `/review` in the editor lets Pi's native fuzzy completion find `/sub:review`; accept that completion before submitting. Facets registers only `/sub:<profile>`, not a bare `/review` alias or a generic `/sub` command.
+
+With no task text, `/sub:review` asks the Sub to perform its profile-defined task in the current workspace, requesting missing details from Main. The command itself does not ask Main's model to delegate. Main stays in its current tab; the Sub reports back through the normal `talk` flow.
+
+Profile commands are registered for trusted effective profiles, including manual ones. Existing commands are never overwritten: if `/sub:review` is already occupied, Facets reports the conflict and does not register that profile command. An existing `/review` remains independent; choose `/sub:review` from completion to invoke the specialist. `/profiles` lists all profiles for the user, including their invocation mode.
+
+Manual invocation is a routing rule, not merely a hidden name:
+
+- Manual profiles are absent from Main's delegation catalog and unavailable to `delegate`, even after the user has invoked them.
+- Their running Subs, session listings, and returned messages are marked **user-invoked specialist**, with the profile's purpose. Main may interpret findings, make fixes, and ask related follow-ups, but should not assign unrelated tasks or substitute them for general consulting profiles.
+- Manual persistent sessions are not advertised to unrelated Main sessions by `list_sub`. Their owning Main can see the open or closed specialist after invocation; only a user command resumes a closed manual session.
+- This controls the Facets workflow, not filesystem secrecy or an OS permission boundary.
+
+Commands bind by **Main session ID + profile name**, not globally or per project. The first invocation creates a Sub; repeated invocations reuse it and queue behind active work. Closing a persistent Sub's tab and invoking it again reopens the same Pi session with its history, although the Herdr tab and run ID are new. `/reload` and resuming the same saved Main preserve the binding. A new or forked Main gets its own binding; a Main using `--no-session` has no binding to restore after process exit. Ephemeral Subs can be reused while open but start fresh after closure.
+
+Bindings and session identities are stored as non-context entries in the Main's native session. Missing saved sessions or ambiguous Herdr availability produce an error rather than silently creating a replacement persistent session. Manual commands share the normal open-Sub limit, but reusing an already-open Sub does not consume another slot. Profile changes apply on a new launch/resume; an already-open Sub retains its launch configuration.
 
 ### Profile-private skills
 
@@ -89,23 +130,25 @@ Directory profiles automatically load skills from their own `skills/` folder:
             └── checklist.md
 ```
 
-The same layout works under trusted project `.pi/facets/profiles/`. No `skills` config entry is required, even when the field is omitted or `[]`. Only selecting this profile (via `--profile` or `delegate`) contributes these skills; other profiles and an unprofiled Main do not automatically receive them. This is discovery isolation, not a filesystem access restriction.
+The same layout works under trusted project `.pi/facets/profiles/`. No `skills` config entry is required, even when the field is omitted or `[]`. Only selecting this profile (via `--profile`, `delegate`, or a user profile command) contributes these skills; other profiles and an unprofiled Main do not automatically receive them. This is discovery isolation, not a filesystem access restriction.
 
 Facets recursively discovers `SKILL.md` directories, stopping at each skill root so supporting files are not treated as skills. Standalone `.md` files directly inside `skills/` are also supported; hidden directories and `node_modules` are skipped. Private skills precede explicit `skills` references, with duplicate source files removed (including symlinks). Pi handles skill validation and same-name collisions using its first-loaded-wins rule. For startup profiles, ambient skills may still take precedence unless `--no-skills` is passed.
 
-Profile overrides replace the entire private skill set: a project profile does not inherit a global profile's skills. Legacy `profiles/<name>.json` files do not auto-discover private skills; migrate to `<name>/config.json` or keep using explicit paths. Private skills use the same model-visibility and asset-preservation behavior as explicitly selected skills. Reload a startup profile with `/reload`; already launched Subs retain their resolved skill selection.
+Profile overrides replace the entire private skill set: a project profile does not inherit a global profile's skills. Legacy `profiles/<name>.json` files do not auto-discover private skills; migrate to `<name>/config.json` or keep using explicit paths. Private skills are loaded from their original paths and follow Pi's native frontmatter semantics, just like explicitly selected skills. To make a private skill model-visible, omit `disable-model-invocation` or set it to `false`; its profile directory already limits discovery to the selected profile. Reload a startup profile with `/reload`; already launched Subs retain their resolved skill selection.
 
-For delegated Subs, Facets resolves profile tools through Pi's canonical `sourceInfo.path` and loads only the extensions that own those tools. Native tools such as `read` and `bash` need no extension; selected `codemode` and `tool_search` tools explicitly load `builtin:codemode` and `builtin:tool-search`, because `--no-extensions` also disables built-in extensions in Pi 1.0. It does not inherit unrelated ambient extensions. Ambient built-in MCP tools are rejected before launch: isolated MCP server selection is not implemented, and loading all configured servers would widen the profile's capabilities. In-memory SDK tools without a loadable extension path are also rejected.
+For delegated Subs, Facets resolves non-MCP profile tools through Pi's canonical `sourceInfo.path` and loads the extensions that own those tools. Native tools such as `read` and `bash` need no extension. Subs also explicitly load `builtin:codemode`, `builtin:tool-search`, and `builtin:mcp`, because `--no-extensions` disables them along with unrelated ambient extensions. In-memory SDK tools without a loadable extension path are still rejected.
+
+MCP follows Pi's normal configuration in the Sub's environment and working directory, including server enabled state, project trust, credentials, and tool exposure. Facets does not copy Main's server configuration, isolate servers, or select MCP tools by profile. Sub launch makes Codemode, tool search, all `mcp__*` tools, and MCP resource tools eligible through Pi's native tool selection. MCP names in `profile.tools` are unnecessary and do not narrow this set or force indirect tools into direct declarations. They also do not fail startup while servers are still connecting; Pi owns connection waiting and error reporting.
 
 ## Tools
 
 ### Main Pi
 
-- `delegate` — launch a fresh Sub or resume a persistent Sub session by session ID; model-only, so it cannot be called through Codemode or other nested tools
+- `delegate` — launch a fresh agent-invokable Sub or resume an agent-invokable persistent Sub session by session ID; model-only, so it cannot be called through Codemode or other nested tools
 - `talk` — queue one message to an existing Sub through Pi's native follow-up scheduling
 - `interrupt_sub` — request cancellation of the current Sub turn without closing its session or tab. Requests are tied to the active input/work boundary, including native follow-ups, so a late request cannot cancel subsequent work. Pi's cancellation is cooperative; a tool that ignores abort may continue running.
 - `close_sub` — stop active work if needed and close the Sub session
-- `list_sub` — render `subs` with Herdr's live `working`/`blocked`/`idle` status for open Subs and `closed · resumable` for saved sessions. By default, show working or blocked Subs and all persistent Subs (including idle open and closed resumable sessions); use `all: true` to include idle or unknown ephemeral Subs. Status is `unknown` if Herdr cannot report it.
+- `list_sub` — render `subs` with Herdr's live `working`/`blocked`/`idle` status for open Subs and `closed · resumable` for saved sessions. By default, show working or blocked Subs and all persistent Subs (including idle open and closed resumable sessions; manual specialists are limited to their owning Main); use `all: true` to include idle or unknown ephemeral Subs. Status is `unknown` if Herdr cannot report it.
 
 ### Sub Pi
 
@@ -119,18 +162,18 @@ Subs launch with:
 
 - a Herdr tab; no headless fallback is available
 - `--no-session` for ephemeral profiles; persistent profiles use a normal saved Pi session
-- `--no-extensions -e <Facets>` so unrelated ambient extensions are not inherited
+- `--no-extensions -e <Facets>` plus explicit profile extensions and native MCP support, without unrelated ambient extensions
 - `--approve` when the Main project is trusted, otherwise `--no-approve`
 - a fresh initial prompt rather than a Main session fork
-- an explicit tool allowlist
+- profile-selected non-MCP tools plus native MCP tools and discovery helpers through Pi's `--tools` option
 
-A Sub receives the configured profile tools plus the mandatory `talk` protocol tool. It validates effective tool activation at startup and enforces the same allowlist for direct and nested calls; a missing or hidden configured tool stops initialization instead of silently dropping a capability. The Main resolves the profile once and stores that immutable launch snapshot in the channel manifest, so later config edits cannot change an already-running Sub.
+A fresh Sub receives Pi's native base instructions and project context (including trusted `AGENTS.md` files), ambient MCP context, the profile-selected non-MCP tools and skills, profile instructions, and the mandatory `talk` protocol. It does not inherit the Main conversation or Facets `MAIN.md`. Pi's native startup tool selection also filters unselected non-MCP tools from extensions that register multiple tools, including Codemode listings; Facets adds no execution-time permission checks. A missing or hidden configured non-MCP tool stops initialization instead of silently producing the wrong starting context. The Main resolves the profile once and stores that launch snapshot in the channel manifest, so later profile config edits do not change an already-running Sub. Explicitly resuming a persistent Sub restores that Sub's own history.
 
-The Main TUI renders each launch with the selected profile plus its configured tool and skill names; long capability lists are compacted. Facets does not add separate Sub-created or Sub-closed lifecycle messages. Each Sub `talk` message is stored as one visible custom message in the Main session, rendered with the Sub title and a three-line preview. This exposes only explicit `talk` deliveries, never the Sub transcript.
+The Main TUI renders each launch with the selected profile plus its configured tool and skill names; long capability lists are compacted. Facets does not add separate Sub-created or Sub-closed lifecycle messages. Each `talk` delivery is stored and rendered as one native user message, with an explicit Main/Sub source label and a delivery identity header. This exposes only explicit `talk` deliveries, never the Sub transcript. Legacy custom messages in saved sessions retain their original renderer.
 
-File arrivals enter Pi's native follow-up queue even while the receiver is busy. Facets adds no separate queue display; messages become visible through the existing formal inbox block when the receiving session records them.
+File arrivals enter Pi's native follow-up queue while the receiver is busy and appear in its normal pending-input display. Idle submissions are serialized through prompt preflight to avoid starting competing runs. Deliveries use input source `extension`, with slash-command and prompt-template expansion disabled; peer text is not executed as a command.
 
-This is a protocol boundary, not an operating-system sandbox. A Sub with shell access runs as the same OS user and may be able to access files outside the project. A future hardened adapter should run write-capable Subs in a container or restricted worktree environment.
+Profiles control startup context, not security isolation. Subs run as the same OS user; tool and skill selection is not an operating-system sandbox.
 
 ## Herdr lifecycle
 
@@ -177,7 +220,7 @@ $XDG_RUNTIME_DIR/pi-facets-<uid>/<main-session>/<run-id>/
 
 Directories use mode `0700`, files use `0600`, writes use atomic rename, and every payload carries a random capability token plus exact Main/run identity. Each direction has one writer and a persisted sequence counter, so messages retain their send order across same-millisecond writes, clock rollback, and extension reloads. Late writes cannot recreate a removed channel. Directory watches notify only the affected channel, with a 20 ms coalescing window; temporary files and unrelated control writes are ignored. A five-second rescan retries unavailable watches and recovers missed events. Startup and reload perform an initial scan, and shutdown releases watchers and timers.
 
-A `talk` tool result confirms queuing, not peer acceptance. Message files stay in the inbox until the receiving Pi records a custom-message receipt with the matching run ID, message ID, and direction. Saved receipts prevent duplicate delivery after reload; ephemeral sessions keep receipts only in memory. In-flight IDs suppress duplicate enqueues and survive extension reload because Pi may retain its native queue. Failed submissions remain queued for retry. Abort alone pauses work without resending potentially retained native messages; a subsequent normal run retries withdrawn messages that still have no receipt, and a fresh receiving session recovers from the file inbox. This is not an exactly-once guarantee across every process or system crash.
+A `talk` tool result confirms queuing, not peer acceptance. Message files stay in the inbox until the receiving Pi records a user message whose leading `[Facets delivery v1]` header matches the run ID, message ID, and direction. User messages have no custom `details` field, so this identity is carried in the message text; input-transforming extensions must preserve the header for acknowledgment. Legacy custom-message receipts are also recognized after an upgrade. Saved receipts prevent duplicate delivery after reload; ephemeral sessions keep receipts only in memory. In-flight IDs suppress duplicate enqueues and survive extension reload because Pi may retain its native queue. Failed submissions remain queued for retry. Abort alone pauses work without resending potentially retained native messages; a subsequent normal run retries withdrawn messages that still have no receipt, and a fresh receiving session recovers from the file inbox. This is not an exactly-once guarantee across every process or system crash.
 
 Closing a Sub does not discard queued Sub-to-Main messages: its closed state and channel are retained until the Main receives them, without consuming an open-Sub slot. Protocol errors are reported once per unchanged failure and retried on subsequent watch/lifecycle wakes or fallback scans; one broken channel does not stop other Subs. Corrupt payloads remain available for manual inspection rather than being silently discarded.
 

@@ -1,8 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getCurrentSystemMessage } from "@earendil-works/pi-ai";
 import type { ResolvedProfile } from "./types.js";
 
-/** Custom-message runs do not pass through before_agent_start in Pi 1.0. */
+/** Talk uses Pi's user-input path, so idle deliveries share normal prompt assembly. */
 export function bindPromptSections(pi: ExtensionAPI, keys: readonly string[], getSections: () => Record<string, string>): void {
 	pi.on("before_agent_start", (event) => {
 		const sections = getSections();
@@ -10,22 +9,6 @@ export function bindPromptSections(pi: ExtensionAPI, keys: readonly string[], ge
 			if (sections[key]) event.systemPromptOptions.sections[key] = sections[key]!;
 			else delete event.systemPromptOptions.sections[key];
 		}
-	});
-	pi.on("context_with_system", (event) => {
-		const desired = getSections();
-		const current = getCurrentSystemMessage(event.messages.filter((message) => message.role === "system"))?.sections ?? {};
-		const patch: Record<string, string | null> = {};
-		for (const key of keys) {
-			const content = desired[key];
-			const section = content ? `<${key}>\n${content}\n</${key}>` : undefined;
-			if (section !== undefined && current[key] !== section) patch[key] = section;
-			else if (section === undefined && current[key] != null) patch[key] = null;
-		}
-		if (Object.keys(patch).length === 0) return;
-		// Supplement only missing/changed Facets sections, never replace the
-		// leading prompt, native sections, tools, or conversation. Request-local
-		// fallback preserves protocol/instructions for idle custom-message runs.
-		return { messages: [...event.messages, { role: "system" as const, content: "", sections: patch, timestamp: Date.now() }] };
 	});
 }
 

@@ -1,17 +1,21 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { MESSAGE_TYPE, removeTalk, type TalkDirection } from "./channel.js";
 import type { DelegateManifest, TalkMessage } from "./types.js";
+import { formatTalkInput, readTalkReceipt } from "./talk-message.js";
 import { canUseNativeQueue, forgetTalk, markTalkQueued, rememberTalk } from "./inbox-state.js";
 
 function hasReceipt(ctx: ExtensionContext, direction: TalkDirection, runId: string, messageId: string): boolean {
 	return ctx.sessionManager.getEntries().some((entry) => {
-		if (entry.type !== "custom_message" || entry.customType !== MESSAGE_TYPE) return false;
-		const details = entry.details as { direction?: string; runId?: string; messageId?: string } | undefined;
+		// Old custom-message receipts still count after upgrading or reloading.
+		const details = entry.type === "message" ? readTalkReceipt(entry.message)
+			: entry.type === "custom_message" && entry.customType === MESSAGE_TYPE
+				? entry.details as { direction?: string; runId?: string; messageId?: string } | undefined
+				: undefined;
 		return details?.direction === direction && details.runId === runId && details.messageId === messageId;
 	});
 }
 
-/** pi.sendMessage is fire-and-forget; its return is not a session receipt. */
+/** pi.sendUserMessage is fire-and-forget; its return is not a session receipt. */
 export function deliverTalk(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
@@ -33,12 +37,11 @@ export function deliverTalk(
 	try {
 		// Pi owns waiting behind current work, not Facets. In-flight IDs prevent
 		// repeated file notifications from submitting the same follow-up twice.
-		pi.sendMessage({
-			customType: MESSAGE_TYPE,
-			content,
-			display: true,
-			details: { title: manifest.title, message: message.message, direction, runId: manifest.runId, messageId: message.id },
-		}, { deliverAs: "followUp", triggerTurn: true });
+		pi.sendUserMessage(formatTalkInput({ direction, runId: manifest.runId, messageId: message.id }, content), {
+			deliverAs: "followUp",
+			// Peer text is input, not an instruction to execute slash commands or templates.
+			expandPromptTemplates: false,
+		});
 	} catch (error) {
 		pending.queued = false;
 		throw error;

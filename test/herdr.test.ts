@@ -136,6 +136,19 @@ test("returns a recovery handle when both launch and rollback fail", async () =>
 	}
 });
 
+test("tab existence distinguishes confirmed closure from Herdr failures", async () => {
+	for (const [response, expected] of [
+		[{ code: 0, stdout: JSON.stringify({ result: { tab: { tab_id: "tab" } } }) }, true],
+		[{ code: 1, stdout: JSON.stringify({ error: { code: "tab_not_found" } }) }, false],
+		[{ code: 1, stdout: JSON.stringify({ error: { code: "server_unavailable" } }) }, undefined],
+		[{ code: 1, stdout: "" }, undefined],
+		[{ code: 0, stdout: JSON.stringify({ result: { tab: { tab_id: "different" } } }) }, undefined],
+	] as const) {
+		const pi = { exec: async () => ({ ...response, killed: false, stderr: "" }) } as unknown as ExtensionAPI;
+		assert.equal(await new HerdrTabAdapter(pi).exists({ adapter: "herdr", tabId: "tab" }), expected);
+	}
+});
+
 test("close reports command failure instead of claiming success", async () => {
 	for (const failure of [{ code: 1, killed: false }, { code: 0, killed: true }]) {
 		const pi = { exec: async () => ({ ...failure, stdout: "", stderr: "Close failed" }) } as unknown as ExtensionAPI;

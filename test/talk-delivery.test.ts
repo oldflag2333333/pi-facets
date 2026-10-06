@@ -6,6 +6,7 @@ import { afterEach, beforeEach, test } from "node:test";
 import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createChannel, listTalkToMain, MESSAGE_TYPE, readManifest, talkToMain } from "../src/channel.js";
 import { deliverTalk, ProtocolErrors } from "../src/talk-delivery.js";
+import { formatTalkInput } from "../src/talk-message.js";
 
 let root: string;
 let previous: string | undefined;
@@ -31,7 +32,7 @@ function fixture() {
 	let queued = false;
 	const warnings: string[] = [];
 	const sent: any[] = [];
-	const pi = { sendMessage: (message: any) => { sent.push(message); } } as unknown as ExtensionAPI;
+	const pi = { sendUserMessage: (message: any) => { sent.push(message); } } as unknown as ExtensionAPI;
 	const ctx = { model: {}, signal: new AbortController().signal, sessionManager: session, isIdle: () => idle, hasPendingMessages: () => queued, hasUI: true,
 		ui: { notify: (message: string) => warnings.push(message) },
 	} as unknown as ExtensionContext;
@@ -46,7 +47,7 @@ test("retains the file until a session receipt exists, then acknowledges even wh
 	f.busy();
 	assert.equal(f.send(), "waiting");
 	const accepted = f.sent[0];
-	f.session.appendCustomMessageEntry(accepted.customType, accepted.content, accepted.display, accepted.details);
+	f.session.appendMessage({ role: "user", content: accepted, timestamp: Date.now() });
 	assert.equal(f.send(), "acknowledged");
 	assert.deepEqual(listTalkToMain(f.channel.channelDir, f.manifest), []);
 	assert.equal(f.sent.length, 1);
@@ -54,15 +55,34 @@ test("retains the file until a session receipt exists, then acknowledges even wh
 
 test("keeps failed synchronous deliveries retryable and supports synchronous receipts", () => {
 	const f = fixture();
-	f.pi.sendMessage = () => { throw new Error("Delivery failed"); };
+	f.pi.sendUserMessage = () => { throw new Error("Delivery failed"); };
 	assert.throws(f.send, /Delivery failed/);
 	assert.equal(listTalkToMain(f.channel.channelDir, f.manifest).length, 1);
-	f.pi.sendMessage = (message) => { f.session.appendCustomMessageEntry(message.customType, message.content, message.display, message.details); };
+	f.pi.sendUserMessage = (message) => { f.session.appendMessage({ role: "user", content: message, timestamp: Date.now() }); };
 	assert.equal(f.send(), "sent");
 	assert.deepEqual(listTalkToMain(f.channel.channelDir, f.manifest), []);
 });
 
-test("persisted receipts prevent duplicate delivery after reload", () => {
+test("native user-message receipts prevent duplicate delivery in a restored session", () => {
+	const f = fixture();
+	const content = formatTalkInput({ direction: "to-main", runId: f.manifest.runId, messageId: f.message.id }, "Already received");
+	f.session.appendMessage({ role: "user", content: [{ type: "text", text: content }], timestamp: Date.now() });
+	const restored = SessionManager.inMemory(root, undefined, f.session.getEntries());
+	assert.equal(deliverTalk(f.pi, { ...f.ctx, sessionManager: restored }, f.channel.channelDir, f.manifest, "to-main", f.message, "Delivery"), "acknowledged");
+	assert.deepEqual(f.sent, []);
+});
+
+test("native receipts must match direction, run, and message ID", () => {
+	const f = fixture();
+	const receipt = { direction: "to-main" as const, runId: f.manifest.runId, messageId: f.message.id };
+	for (const wrong of [{ ...receipt, direction: "to-sub" as const }, { ...receipt, runId: "different" }, { ...receipt, messageId: "different" }]) {
+		f.session.appendMessage({ role: "user", content: formatTalkInput(wrong, "Unrelated"), timestamp: Date.now() });
+	}
+	assert.equal(f.send(), "sent");
+	assert.equal(listTalkToMain(f.channel.channelDir, f.manifest).length, 1);
+});
+
+test("legacy custom-message receipts prevent duplicate delivery after upgrade", () => {
 	const f = fixture();
 	f.session.appendCustomMessageEntry(MESSAGE_TYPE, "Already received", true, { direction: "to-main", runId: f.manifest.runId, messageId: f.message.id });
 	const restored = SessionManager.inMemory(root, undefined, f.session.getEntries());

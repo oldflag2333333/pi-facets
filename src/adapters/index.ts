@@ -20,6 +20,10 @@ export class AdapterRegistry {
 		return this.herdr.status(handle);
 	}
 
+	async exists(handle: SurfaceHandle | undefined): Promise<boolean | undefined> {
+		return this.herdr.exists(handle);
+	}
+
 	async close(handle: SurfaceHandle | undefined): Promise<void> {
 		if (!handle) return;
 		await this.herdr.close(handle);

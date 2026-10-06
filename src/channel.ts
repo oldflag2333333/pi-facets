@@ -91,6 +91,7 @@ function validProfile(value: unknown): boolean {
 		&& (profile.description === undefined || typeof profile.description === "string")
 		&& (profile.model === undefined || typeof profile.model === "string")
 		&& (profile.thinkingLevel === undefined || typeof profile.thinkingLevel === "string")
+		&& (profile.invocation === undefined || profile.invocation === "both" || profile.invocation === "manual")
 		&& (profile.sessionPersistence === undefined || profile.sessionPersistence === "ephemeral" || profile.sessionPersistence === "persistent")
 		&& (profile.instructions === undefined || typeof profile.instructions === "string"));
 }
@@ -99,6 +100,7 @@ export function readManifest(channelDir: string): DelegateManifest {
 	const value = record(readJson(path.join(channelDir, "manifest.json")));
 	if (!value || value.version !== 1 || typeof value.runId !== "string" || typeof value.mainSessionId !== "string"
 		|| typeof value.title !== "string" || typeof value.task !== "string" || typeof value.cwd !== "string"
+		|| (value.origin !== undefined && value.origin !== "manual")
 		|| !validProfile(value.profile) || typeof value.token !== "string" || typeof value.createdAt !== "number") {
 		throw new Error("Invalid Facets channel manifest.");
 	}

@@ -3,8 +3,9 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { buildProfilesContext } from "./context.js";
 import { loadProfiles, resolveProfile } from "./loader.js";
 import { applyStartupPromptSections, bindPromptSections } from "./system-prompt.js";
-import { applyProfileTools, ProfileToolPolicy } from "./tool-policy.js";
+import { applyProfileTools } from "./tool-selection.js";
 import type { ResolvedProfile } from "./types.js";
+import { isMcpTool } from "./mcp.js";
 
 export class StartupProfileRuntime {
 	private active?: ResolvedProfile;
@@ -14,7 +15,6 @@ export class StartupProfileRuntime {
 	constructor(private readonly pi: ExtensionAPI) {}
 
 	register(): void {
-		const toolPolicy = new ProfileToolPolicy(this.pi);
 		this.pi.registerFlag("profile", {
 			description: "Facets profile name to apply at process startup",
 			type: "string",
@@ -26,21 +26,17 @@ export class StartupProfileRuntime {
 			if (typeof selected !== "string" || !selected.trim()) {
 				this.active = undefined;
 				this.startupError = undefined;
-				toolPolicy.clear();
 				ctx.ui.setStatus("facets-profile", undefined);
 				return;
 			}
-			toolPolicy.denyAll(`Facets profile '${selected.trim()}' has not initialized successfully.`);
 			try {
 				this.active = resolveProfile(selected.trim(), ctx.cwd, ctx.isProjectTrusted());
 				await this.apply(this.active, ctx);
-				toolPolicy.allow(this.active.name, this.active.tools);
 				this.startupError = undefined;
 				ctx.ui.setStatus("facets-profile", `profile:${this.active.name}`);
 			} catch (error) {
 				this.active = undefined;
 				this.startupError = error instanceof Error ? error.message : String(error);
-				toolPolicy.denyAll(`Cannot execute tools: ${this.startupError}`);
 				ctx.ui.notify(this.startupError, "error");
 				if (!ctx.hasUI) console.error(`Facets profile error: ${this.startupError}`);
 			}
@@ -69,7 +65,7 @@ export class StartupProfileRuntime {
 				const catalog = loadProfiles(ctx.cwd, ctx.isProjectTrusted());
 				const lines = [...catalog.profiles.values()]
 					.sort((left, right) => left.name.localeCompare(right.name))
-					.map((profile) => `${profile.name} (${profile.source})${profile.description ? ` — ${profile.description}` : ""}`);
+					.map((profile) => `${profile.name} (${profile.source}, ${profile.invocation ?? "both"})${profile.description ? ` — ${profile.description}` : ""}`);
 				const diagnostics = catalog.diagnostics.map((item) => `${item.path}: ${item.message}`);
 				ctx.ui.notify([
 					lines.length > 0 ? lines.join("\n") : "No Facets profiles configured.",
@@ -81,7 +77,7 @@ export class StartupProfileRuntime {
 
 	private async apply(profile: ResolvedProfile, ctx: ExtensionContext): Promise<void> {
 		const allTools = new Set(this.pi.getAllTools().map((tool) => tool.name));
-		const unknownTools = profile.tools.filter((tool) => !allTools.has(tool));
+		const unknownTools = profile.tools.filter((tool) => !isMcpTool(tool) && !allTools.has(tool));
 		if (unknownTools.length > 0) throw new Error(`Profile '${profile.name}' references unknown tools: ${unknownTools.join(", ")}.`);
 
 		if (profile.model) {

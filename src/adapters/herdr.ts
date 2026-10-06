@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { subSessionName } from "../manual-context.js";
 import { subCapabilityArgs } from "../profiles/launch-args.js";
 import type { SubAgentStatus, SubLaunchSpec, SubSurfaceAdapter, SurfaceHandle } from "../types.js";
 
@@ -41,7 +42,7 @@ function subArgs(spec: SubLaunchSpec): string[] {
 		...(spec.profile.sessionPersistence === "persistent" || spec.resumeSessionId ? [] : ["--no-session"]),
 		...(spec.resumeSessionId ? ["--session", spec.resumeSessionId] : []),
 		spec.projectTrusted ? "--approve" : "--no-approve",
-		"--name", `[sub] ${safeLabel(spec.title)}`,
+		"--name", subSessionName(safeLabel(spec.title), spec.origin),
 		...subCapabilityArgs(spec.profile, spec.entryPath),
 	];
 }
@@ -132,6 +133,18 @@ export class HerdrTabAdapter implements SubSurfaceAdapter {
 		} catch {
 			return "unknown";
 		}
+	}
+
+	/** Distinguish an explicitly missing tab from a disconnected or unhealthy Herdr. */
+	async exists(handle: SurfaceHandle | undefined): Promise<boolean | undefined> {
+		if (!handle?.tabId) return undefined;
+		try {
+			const response = await this.pi.exec("herdr", ["tab", "get", handle.tabId], { timeout: 3000 });
+			if (response.killed) return undefined;
+			const payload = parseEnvelope(response.stdout);
+			if (response.code !== 0) return nestedString(payload, "error", "code") === "tab_not_found" ? false : undefined;
+			return nestedString(payload, "tab", "tab_id") === handle.tabId ? true : undefined;
+		} catch { return undefined; }
 	}
 
 	async close(handle: SurfaceHandle): Promise<void> {

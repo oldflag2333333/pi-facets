@@ -1,4 +1,5 @@
 import type { ResolvedProfile } from "./types.js";
+import { isMcpTool, MCP_EXTENSIONS, MCP_TOOL_SELECTION } from "./mcp.js";
 
 export const SUB_CONTROL_TOOLS = ["talk"] as const;
 
@@ -8,10 +9,10 @@ function unique(values: readonly string[]): string[] {
 
 export function subCapabilityArgs(profile: ResolvedProfile, facetsEntryPath: string): string[] {
 	const args: string[] = [];
-	for (const extension of unique(profile.resolvedExtensions).filter((entry) => entry !== facetsEntryPath)) {
+	for (const extension of unique([...profile.resolvedExtensions, ...MCP_EXTENSIONS]).filter((entry) => entry !== facetsEntryPath)) {
 		args.push("-e", extension);
 	}
-	args.push("--tools", unique([...profile.tools, ...SUB_CONTROL_TOOLS]).join(","));
+	args.push("--tools", unique([...profile.tools.filter((name) => !isMcpTool(name)), ...SUB_CONTROL_TOOLS, ...MCP_TOOL_SELECTION]).join(","));
 	if (profile.model) args.push("--model", profile.model);
 	if (profile.thinkingLevel) args.push("--thinking", profile.thinkingLevel);
 	args.push("--no-skills");

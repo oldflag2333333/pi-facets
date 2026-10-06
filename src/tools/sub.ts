@@ -17,7 +17,8 @@ import {
 } from "../channel.js";
 import { applySubPromptSections, bindPromptSections } from "../profiles/system-prompt.js";
 import { SUB_CONTROL_TOOLS } from "../profiles/launch-args.js";
-import { applyProfileTools, ProfileToolPolicy } from "../profiles/tool-policy.js";
+import { applyProfileTools } from "../profiles/tool-selection.js";
+import { MANUAL_SUB_GUIDANCE, subSessionName } from "../manual-context.js";
 import { talkView } from "../talk-render.js";
 import { ChannelMonitor } from "../channel-monitor.js";
 import { bindInboxEvents } from "../inbox-state.js";
@@ -44,9 +45,7 @@ function loadManifest(): { channelDir: string; manifest: DelegateManifest } {
 
 export function registerSub(pi: ExtensionAPI): void {
 	const loaded = loadManifest();
-	const allowedTools = [...new Set([...loaded.manifest.profile.tools, ...SUB_CONTROL_TOOLS])];
-	const toolPolicy = new ProfileToolPolicy(pi);
-	toolPolicy.denyAll("The Facets Sub profile has not initialized successfully.");
+	const selectedTools = [...new Set([...loaded.manifest.profile.tools, ...SUB_CONTROL_TOOLS])];
 	const protocolErrors = new ProtocolErrors();
 	let closing = false;
 	let activeTurn: ActiveTurn | undefined;
@@ -66,13 +65,11 @@ export function registerSub(pi: ExtensionAPI): void {
 	// extensions that register the profile's tools dynamically during startup.
 	pi.on("resources_discover", (_event, ctx) => {
 		try {
-			applyProfileTools(pi, loaded.manifest.profile.name, allowedTools);
-			toolPolicy.allow(loaded.manifest.profile.name, allowedTools);
+			applyProfileTools(pi, loaded.manifest.profile.name, selectedTools);
 			ready = true;
 			monitor.wakeAll();
 		} catch (error) {
 			const reason = `Unable to initialize Sub profile: ${error instanceof Error ? error.message : String(error)}`;
-			toolPolicy.denyAll(reason);
 			talkToMain(loaded.channelDir, loaded.manifest, reason);
 			ctx.shutdown();
 		}
@@ -80,7 +77,7 @@ export function registerSub(pi: ExtensionAPI): void {
 
 	pi.on("session_start", (_event, ctx) => {
 		activeContext = ctx;
-		pi.setSessionName(`[sub] ${loaded.manifest.title}`);
+		pi.setSessionName(subSessionName(loaded.manifest.title, loaded.manifest.origin));
 		ctx.ui.setTitle(`[sub] ${loaded.manifest.title}`);
 		ctx.ui.setStatus("facets", `sub · ${loaded.manifest.profile.name}`);
 		const sessionFile = ctx.sessionManager.getSessionFile();
@@ -104,7 +101,6 @@ export function registerSub(pi: ExtensionAPI): void {
 		try {
 			if (readClose(loaded.channelDir, loaded.manifest)) {
 				closing = true;
-				toolPolicy.denyAll("The Main has closed this Sub session.");
 				monitor.stop();
 				ctx.abort();
 				ctx.shutdown();
@@ -154,9 +150,11 @@ export function registerSub(pi: ExtensionAPI): void {
 	bindPromptSections(pi, ["facets_sub_protocol", "facets_profile"], () => {
 		const sections: Record<string, string> = {};
 		applySubPromptSections(sections, loaded.manifest.profile);
+		if (loaded.manifest.origin === "manual") sections.facets_sub_protocol += `\n\n${MANUAL_SUB_GUIDANCE}`;
 		return sections;
 	});
 
+	// Preserve rendering for legacy custom messages in resumed sessions.
 	pi.registerMessageRenderer(MESSAGE_TYPE, (message, options, theme) => {
 		const details = message.details as { title?: string; message?: string } | undefined;
 		const title = details?.title ?? loaded.manifest.title;

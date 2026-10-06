@@ -6,6 +6,7 @@ import { StartupProfileRuntime } from "./profiles/runtime.js";
 import { MainRunManager } from "./run-manager.js";
 import { registerSub } from "./tools/sub.js";
 import { talkView } from "./talk-render.js";
+import { registerSubCommands } from "./commands/sub.js";
 import { registerMainTools } from "./tools/main.js";
 
 export default function piDelegate(pi: ExtensionAPI): void {
@@ -17,9 +18,11 @@ export default function piDelegate(pi: ExtensionAPI): void {
 	const manager = new MainRunManager(pi);
 	const startupProfile = new StartupProfileRuntime(pi);
 	registerMainTools(pi, manager);
+	registerSubCommands(pi, manager);
 	startupProfile.register();
 	new MainContextRuntime(pi).register();
 
+	// Preserve rendering for legacy custom messages in resumed sessions.
 	pi.registerMessageRenderer(MESSAGE_TYPE, (message, options, theme) => {
 		const details = message.details as { title?: string; message?: string } | undefined;
 		const title = details?.title ?? "Sub";

@@ -8,6 +8,7 @@ export interface DelegateManifest {
 	task: string;
 	cwd: string;
 	profile: ResolvedProfile;
+	origin?: "manual";
 	token: string;
 	createdAt: number;
 }
@@ -74,6 +75,8 @@ export interface RunSnapshot {
 	title: string;
 	cwd: string;
 	profileName: string;
+	origin?: "manual";
+	purpose?: string;
 	sessionPersistence: SessionPersistence;
 	channelDir: string;
 	createdAt: number;
@@ -92,6 +95,7 @@ export interface SubLaunchSpec {
 	task: string;
 	cwd: string;
 	projectTrusted: boolean;
+	origin?: "manual";
 	resumeSessionId?: string;
 	profile: ResolvedProfile;
 	channelDir: string;

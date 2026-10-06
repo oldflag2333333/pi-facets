@@ -31,7 +31,16 @@ test("builds a concise startup context with the effective profiles", () => {
 	assert.doesNotMatch(context, /talk|tools:/);
 });
 
+test("omits manual profiles without advertising that hidden profiles exist", () => {
+	const manual = { ...profile("review", "global", "Company MR review"), invocation: "manual" as const };
+	const catalog = { profiles: new Map([["oracle", profile("oracle", "global", "Architecture advice")], ["review", manual]]), diagnostics: [] };
+	assert.match(buildProfilesContext(catalog), /oracle/);
+	assert.doesNotMatch(buildProfilesContext(catalog), /review|Company MR|hidden|manual/);
+	catalog.profiles.delete("oracle");
+	assert.doesNotMatch(buildProfilesContext(catalog), /review|Company MR/);
+});
+
 test("tells the Main not to delegate when no valid profile exists", () => {
 	const context = buildProfilesContext({ profiles: new Map(), diagnostics: [] });
-	assert.match(context, /No valid profiles are configured/);
+	assert.match(context, /No agent-invokable profiles are configured/);
 });

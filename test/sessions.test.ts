@@ -22,6 +22,7 @@ test("selects closed Facets Sub sessions and excludes current open sessions", ()
 		session("open", "[sub] Active review", 10),
 		session("closed", "[sub] Previous review", 20),
 		session("main", "Ordinary session", 30),
+		session("manual", "[sub:manual] review", 40),
 	], new Set(["open"]));
 	assert.deepEqual(selected, [{
 		sessionId: "closed",

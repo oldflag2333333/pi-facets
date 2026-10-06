@@ -1,5 +1,6 @@
 export type ProfileSource = "global" | "project";
 export type SessionPersistence = "ephemeral" | "persistent";
+export type ProfileInvocation = "both" | "manual";
 
 export interface ProfileDefinition {
 	version: 1;
@@ -8,6 +9,8 @@ export interface ProfileDefinition {
 	model?: string;
 	thinkingLevel?: string;
 	sessionPersistence?: SessionPersistence;
+	/** Manual profiles are started by user commands, not model delegation. */
+	invocation?: ProfileInvocation;
 	tools: string[];
 	skills?: string[];
 	instructions?: string;

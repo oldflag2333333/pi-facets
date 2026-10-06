@@ -44,6 +44,22 @@ afterEach(() => {
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("validates manual invocation while keeping operator discovery separate from delegation", () => {
+	writeJson(path.join(globalProfilesDir(), "review.json"), {
+		version: 1, name: "review", invocation: "manual", sessionPersistence: "persistent", tools: ["read"],
+	});
+	writeJson(path.join(globalProfilesDir(), "oracle.json"), { version: 1, name: "oracle", tools: ["read"] });
+	assert.equal(resolveProfile("review", cwd, false).invocation, "manual");
+	assert.throws(() => resolveProfile("review", cwd, false, { agentOnly: true }), /user-invoked only/);
+	assert.throws(() => resolveProfile("missing", cwd, false, { agentOnly: true }), (error: unknown) => {
+		assert.match(String(error), /oracle/);
+		assert.doesNotMatch(String(error), /review/);
+		return true;
+	});
+	writeJson(path.join(globalProfilesDir(), "bad.json"), { version: 1, name: "bad", invocation: "hidden", tools: ["read"] });
+	assert.match(loadProfiles(cwd, false).diagnostics[0]!.message, /invocation/);
+});
+
 test("loads global profiles without applying an internal thinking-level enum", () => {
 	writeJson(path.join(globalProfilesDir(), "reviewer.json"), {
 		version: 1,
@@ -150,7 +166,7 @@ test("resolves configured skill names to concrete SKILL.md paths", () => {
 	assert.deepEqual(resolveProfile("reviewer", cwd, false).resolvedSkills, [skill]);
 });
 
-test("makes profile-selected manual skills model-visible without modifying their source", () => {
+test("passes explicitly selected manual skills through unchanged without runtime mirrors", () => {
 	const skillDir = path.join(process.env.PI_CODING_AGENT_DIR!, "skills", "manual-review");
 	const skill = path.join(skillDir, "SKILL.md");
 	const source = "---\nname: manual-review\ndescription: Review manually\ndisable-model-invocation: true\n---\n\nRead [guide](guide.md).\n";
@@ -166,8 +182,8 @@ test("makes profile-selected manual skills model-visible without modifying their
 
 	const [resolved] = resolveProfile("reviewer", cwd, false).resolvedSkills;
 	assert.ok(resolved);
-	assert.notEqual(resolved, skill);
-	assert.match(fs.readFileSync(resolved, "utf8"), /disable-model-invocation: false/);
+	assert.equal(resolved, skill);
+	assert.equal(fs.existsSync(process.env.XDG_RUNTIME_DIR!), false);
 	assert.equal(fs.readFileSync(skill, "utf8"), source);
 	assert.equal(fs.readFileSync(path.join(path.dirname(resolved), "guide.md"), "utf8"), "review guide\n");
 });
@@ -258,14 +274,15 @@ test("legacy profiles do not automatically load a shared sibling skills director
 	assert.deepEqual(resolveProfile("reviewer", cwd, false).resolvedSkills, []);
 });
 
-test("auto-loaded private manual skills remain model-visible and preserve assets", () => {
+test("passes private manual skills through unchanged without runtime mirrors", () => {
 	const dir = writeDirectoryProfile(globalProfilesDir(), "reviewer", { version: 1, name: "reviewer", tools: ["read"] });
 	const skill = writeSkill(path.join(dir, "skills", "review", "SKILL.md"), "review", true);
 	fs.writeFileSync(path.join(path.dirname(skill), "guide.md"), "private guide");
 	const [resolved] = resolveProfile("reviewer", cwd, false).resolvedSkills;
 	assert.ok(resolved);
-	assert.match(fs.readFileSync(resolved, "utf8"), /disable-model-invocation: false/);
-	assert.match(fs.readFileSync(skill, "utf8"), /disable-model-invocation: true/);
+	assert.equal(resolved, skill);
+	assert.equal(fs.existsSync(process.env.XDG_RUNTIME_DIR!), false);
+	assert.match(fs.readFileSync(resolved, "utf8"), /disable-model-invocation: true/);
 	assert.equal(fs.readFileSync(path.join(path.dirname(resolved), "guide.md"), "utf8"), "private guide");
 });
 

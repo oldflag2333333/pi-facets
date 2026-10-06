@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { MESSAGE_TYPE, type TalkDirection } from "./channel.js";
 import type { DelegateManifest, TalkMessage } from "./types.js";
+import { readTalkReceipt } from "./talk-message.js";
 
 type ReadonlySessionManager = ExtensionContext["sessionManager"];
 interface PendingTalk {
@@ -15,7 +16,7 @@ interface DeliveryState {
 	active: boolean;
 }
 
-// Pi can retain native custom-message queues across /reload. Retain only their
+// Pi can retain native message queues across /reload. Retain only their
 // delivery state across extension replacement, keyed weakly by the session.
 const STATE_KEY = Symbol.for("pi-facets.inbox-state.v1");
 const globals = globalThis as unknown as Record<symbol, unknown>;
@@ -45,9 +46,13 @@ export function rememberTalk(ctx: ExtensionContext, direction: TalkDirection, ma
 export function forgetTalk(ctx: ExtensionContext, direction: TalkDirection, runId: string, messageId: string): void {
 	state(ctx).pending.delete(key(direction, runId, messageId));
 }
-/** sendMessage queues streaming work, but does not queue a manual compaction. */
+/** Queue behind streaming work, but never compete with manual compaction or prompt preflight. */
 export function canUseNativeQueue(ctx: ExtensionContext): boolean {
-	return ctx.isIdle() || state(ctx).active || ctx.signal !== undefined;
+	const value = state(ctx);
+	// sendUserMessage awaits input/auth hooks before Pi becomes busy. Submit only
+	// one idle prompt at a time; its receipt or agent_start will wake the rest.
+	if (ctx.isIdle()) return ![...value.pending.values()].some((pending) => pending.queued && !pending.queuedWhileBusy);
+	return value.active || ctx.signal !== undefined;
 }
 export function markTalkQueued(ctx: ExtensionContext, pending: PendingTalk): void {
 	pending.queued = true;
@@ -69,6 +74,7 @@ export function bindInboxEvents(pi: ExtensionAPI, getContext: () => ExtensionCon
 		value.active = true;
 		const runSerial = value.runSerial;
 		ctx.signal?.addEventListener("abort", () => { if (value.runSerial === runSerial) value.aborted = true; }, { once: true });
+		wakePending();
 	});
 	pi.on("agent_end", (event) => {
 		const ctx = getContext();
@@ -77,7 +83,8 @@ export function bindInboxEvents(pi: ExtensionAPI, getContext: () => ExtensionCon
 		state(ctx).aborted ||= ctx.signal?.aborted === true || (last?.role === "assistant" && last.stopReason === "aborted");
 	});
 	pi.on("message_end", (event) => {
-		if (event.message.role === "custom" && event.message.customType === MESSAGE_TYPE) wake();
+		if (readTalkReceipt(event.message)
+			|| (event.message.role === "custom" && event.message.customType === MESSAGE_TYPE)) wake();
 	});
 	pi.on("turn_start", wakePending);
 	pi.on("model_select", wakePending);

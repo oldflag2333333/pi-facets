@@ -4,11 +4,10 @@ import { Container, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { resolveProfile } from "../profiles/loader.js";
 import { resolveToolExtensions } from "../profiles/tool-sources.js";
-import type { MainRunManager } from "../run-manager.js";
+import { MAX_OPEN_SUBS, type MainRunManager } from "../run-manager.js";
+import { MANUAL_MAIN_GUIDANCE } from "../manual-context.js";
 import { talkView } from "../talk-render.js";
 import type { SubAgentStatus } from "../types.js";
-
-const MAX_OPEN_SUBS = 4;
 
 function normalizeTitle(value: string): string {
 	return value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 48) || "delegated task";
@@ -58,6 +57,7 @@ export function registerMainTools(pi: ExtensionAPI, manager: MainRunManager): vo
 		promptGuidelines: [
 			"Use delegate for work assigned by MAIN.md or a separable task that benefits from an independent context; select an explicitly configured profile and provide a short informative title.",
 			"After delegate launches, do not wait or repeatedly poll. Facets will wake the Main when the Sub uses talk.",
+			"For Subs labeled user-invoked specialists, follow up only on the user's task and results. Do not assign unrelated work or substitute them for general consulting profiles. New tasks are initiated by the user through a profile command.",
 			"Use talk to respond to an existing Sub, interrupt_sub to stop its current turn without closing it, and close_sub only after its delivery is accepted or the user asks to close it.",
 		],
 		parameters: Type.Object({
@@ -72,7 +72,7 @@ export function registerMainTools(pi: ExtensionAPI, manager: MainRunManager): vo
 			const title = normalizeTitle(params.title);
 			const cwd = path.resolve(ctx.cwd, params.cwd ?? ".");
 			const profile = resolveToolExtensions(
-				resolveProfile(params.profile, ctx.cwd, ctx.isProjectTrusted()),
+				resolveProfile(params.profile, ctx.cwd, ctx.isProjectTrusted(), { agentOnly: true }),
 				pi.getAllTools(),
 			);
 			const sessionPersistence = profile.sessionPersistence ?? "ephemeral";
@@ -222,6 +222,8 @@ export function registerMainTools(pi: ExtensionAPI, manager: MainRunManager): vo
 				title: run.title,
 				profile: run.profileName,
 				sessionPersistence: run.sessionPersistence,
+				origin: run.origin,
+				purpose: run.purpose,
 				status,
 				adapter: run.surface?.adapter,
 				elapsedSeconds: Math.max(0, Math.round((now - run.createdAt) / 1000)),
@@ -231,9 +233,10 @@ export function registerMainTools(pi: ExtensionAPI, manager: MainRunManager): vo
 				modifiedSecondsAgo: Math.max(0, Math.round((now - session.modifiedAt) / 1000)),
 			}));
 			const lines = [
-				...open.map((run) => `- ${run.status} ${run.runId.slice(0, 8)} ${run.title} <${run.profile}, ${run.sessionPersistence}>`),
-				...resumable.map((session) => `- closed ${session.sessionId} ${session.title} <persistent, resumable> cwd=${session.cwd}`),
+				...open.map((run) => `- ${run.status} ${run.runId.slice(0, 8)} ${run.title} <${run.profile}, ${run.sessionPersistence}${run.origin === "manual" ? ", user-invoked specialist" : ""}>${run.purpose ? ` Purpose: ${run.purpose}` : ""}`),
+				...resumable.map((session) => `- closed ${session.sessionId} ${session.title} <persistent, ${session.origin === "manual" ? "user-invoked; resume via user command" : "resumable"}> cwd=${session.cwd}${session.purpose ? ` Purpose: ${session.purpose}` : ""}`),
 			];
+			if (open.some((run) => run.origin === "manual") || resumable.some((session) => session.origin === "manual")) lines.push(MANUAL_MAIN_GUIDANCE);
 			return { content: [{ type: "text", text: lines.join("\n") || "no Sub sessions." }], details: { open, resumable } };
 		},
 		renderCall(_args, theme) {
@@ -247,6 +250,7 @@ export function registerMainTools(pi: ExtensionAPI, manager: MainRunManager): vo
 					title: string;
 					profile: string;
 					sessionPersistence: string;
+					origin?: "manual";
 					status: SubAgentStatus;
 					adapter?: string;
 					elapsedSeconds: number;
@@ -256,6 +260,7 @@ export function registerMainTools(pi: ExtensionAPI, manager: MainRunManager): vo
 					title: string;
 					cwd: string;
 					modifiedSecondsAgo: number;
+					origin?: "manual";
 				}>;
 			} | undefined;
 			const open = details?.open ?? [];
@@ -267,6 +272,7 @@ export function registerMainTools(pi: ExtensionAPI, manager: MainRunManager): vo
 						run.runId.slice(0, 8),
 						run.subSessionId?.slice(0, 8),
 						run.profile,
+						run.origin === "manual" ? "user-invoked specialist" : undefined,
 						run.sessionPersistence,
 						run.status,
 						run.adapter,
@@ -278,7 +284,7 @@ export function registerMainTools(pi: ExtensionAPI, manager: MainRunManager): vo
 					const metadata = [
 						session.sessionId.slice(0, 8),
 						"persistent",
-						"closed · resumable",
+						session.origin === "manual" ? "closed · user-invoked" : "closed · resumable",
 						path.basename(session.cwd),
 						formatElapsed(session.modifiedSecondsAgo),
 					].join(" · ");

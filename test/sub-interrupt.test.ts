@@ -76,7 +76,7 @@ test("Sub aborts only the targeted turn and stays open", async () => {
 		assert.equal(readActiveTurn(channel.channelDir, manifest)?.turnId, initialInputTurn.turnId);
 		const second = readActiveTurn(channel.channelDir, manifest)!;
 		writeInterrupt(channel.channelDir, manifest, second);
-		fire("message_start", { message: { role: "custom", customType: "facets-message", details: { direction: "to-sub" } } }, ctx);
+		fire("message_start", { message: { role: "user", content: "Follow-up from Main" } }, ctx);
 		const nextInput = readActiveTurn(channel.channelDir, manifest)!;
 		assert.notEqual(nextInput.turnId, second.turnId);
 		await delay(150);
