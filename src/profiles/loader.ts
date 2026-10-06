@@ -14,6 +14,8 @@ import type {
 const PROFILE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const MAX_PROFILE_BYTES = 256 * 1024;
 const PROFILE_CONFIG_FILE = "config.json";
+const PROFILE_INSTRUCTIONS_FILE = "instructions.md";
+const MAX_INSTRUCTIONS_CHARACTERS = 64 * 1024;
 const ALLOWED_KEYS = new Set([
 	"version",
 	"name",
@@ -60,7 +62,7 @@ function parseProfile(value: unknown, expectedName: string): ProfileDefinition {
 	if (typeof value.description === "string" && value.description.length > 1024) throw new Error("description exceeds 1024 characters");
 	if (typeof value.model === "string" && value.model.length > 512) throw new Error("model exceeds 512 characters");
 	if (typeof value.thinkingLevel === "string" && value.thinkingLevel.length > 128) throw new Error("thinkingLevel exceeds 128 characters");
-	if (typeof value.instructions === "string" && value.instructions.length > 64 * 1024) throw new Error("instructions exceeds 65536 characters");
+	if (typeof value.instructions === "string" && value.instructions.length > MAX_INSTRUCTIONS_CHARACTERS) throw new Error(`instructions exceeds ${MAX_INSTRUCTIONS_CHARACTERS} characters`);
 	if (expectedName !== value.name) throw new Error(`name '${value.name}' must match profile entry '${expectedName}'`);
 	return {
 		version: 1,
@@ -78,9 +80,27 @@ function parseProfile(value: unknown, expectedName: string): ProfileDefinition {
 	};
 }
 
+function readInstructions(file: string): string | undefined {
+	let stat: fs.Stats;
+	try {
+		stat = fs.statSync(file);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw error;
+	}
+	if (!stat.isFile()) throw new Error("instructions.md must be a regular file");
+	// Bound the read while allowing multi-byte UTF-8 instructions.
+	if (stat.size > MAX_INSTRUCTIONS_CHARACTERS * 4) throw new Error("instructions.md exceeds maximum byte size");
+	const instructions = fs.readFileSync(file, "utf8");
+	if (!instructions.trim()) throw new Error("instructions.md must be a non-empty string");
+	if (instructions.length > MAX_INSTRUCTIONS_CHARACTERS) throw new Error(`instructions.md exceeds ${MAX_INSTRUCTIONS_CHARACTERS} characters`);
+	return instructions;
+}
+
 interface ProfileCandidate {
 	name: string;
 	configPath: string;
+	instructionsPath?: string;
 }
 
 interface LoadedProfileDirectory {
@@ -117,6 +137,7 @@ function loadDirectory(directory: string, source: ProfileSource, diagnostics: Pr
 			candidate = {
 				name: entryName,
 				configPath: path.join(entryPath, PROFILE_CONFIG_FILE),
+				instructionsPath: path.join(entryPath, PROFILE_INSTRUCTIONS_FILE),
 			};
 		}
 		if (!candidate) continue;
@@ -139,14 +160,20 @@ function loadDirectory(directory: string, source: ProfileSource, diagnostics: Pr
 
 		const candidate = matches[0]!;
 		let parsed: ProfileDefinition;
+		let diagnosticPath = candidate.configPath;
 		try {
 			const stat = fs.statSync(candidate.configPath);
 			if (!stat.isFile()) throw new Error(`${path.basename(candidate.configPath)} must be a regular file`);
 			if (stat.size > MAX_PROFILE_BYTES) throw new Error(`profile exceeds ${MAX_PROFILE_BYTES} bytes`);
 			parsed = parseProfile(JSON.parse(fs.readFileSync(candidate.configPath, "utf8")) as unknown, name);
+			if (candidate.instructionsPath) {
+				diagnosticPath = candidate.instructionsPath;
+				const instructions = readInstructions(candidate.instructionsPath);
+				if (instructions !== undefined) parsed.instructions = instructions;
+			}
 		} catch (error) {
 			invalidNames.add(name);
-			diagnostics.push({ path: candidate.configPath, message: error instanceof Error ? error.message : String(error) });
+			diagnostics.push({ path: diagnosticPath, message: error instanceof Error ? error.message : String(error) });
 			continue;
 		}
 

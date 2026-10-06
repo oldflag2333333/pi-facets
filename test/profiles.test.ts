@@ -82,6 +82,96 @@ test("loads directory profiles with additive instructions", () => {
 	assert.equal(profile?.instructions, "Append these instructions.");
 });
 
+test("prefers instructions.md over inline instructions and preserves Markdown verbatim", () => {
+	const profileDir = writeDirectoryProfile(globalProfilesDir(), "reviewer", {
+		version: 1, name: "reviewer", tools: ["read"], instructions: "Inline fallback.",
+	});
+	const instructions = "# Reviewer\n\nReview only.\n保持只读。\n";
+	fs.writeFileSync(path.join(profileDir, "instructions.md"), instructions);
+	const catalog = loadProfiles(cwd, false);
+	assert.deepEqual(catalog.diagnostics, []);
+	assert.equal(catalog.profiles.get("reviewer")?.instructions, instructions);
+	assert.equal(resolveProfile("reviewer", cwd, false).instructions, instructions);
+	fs.unlinkSync(path.join(profileDir, "instructions.md"));
+	assert.equal(resolveProfile("reviewer", cwd, false).instructions, "Inline fallback.");
+});
+
+test("loads file-only instructions and picks up changes on reload", () => {
+	const profileDir = writeDirectoryProfile(globalProfilesDir(), "reviewer", {
+		version: 1, name: "reviewer", tools: ["read"],
+	});
+	const file = path.join(profileDir, "instructions.md");
+	fs.writeFileSync(file, "First role.");
+	const snapshot = resolveProfile("reviewer", cwd, false);
+	assert.equal(snapshot.instructions, "First role.");
+	fs.writeFileSync(file, "Updated role.");
+	assert.equal(resolveProfile("reviewer", cwd, false).instructions, "Updated role.");
+	assert.equal(snapshot.instructions, "First role.");
+});
+
+test("does not share instructions.md with legacy or sibling profiles", () => {
+	writeJson(path.join(globalProfilesDir(), "legacy.json"), {
+		version: 1, name: "legacy", tools: ["read"], instructions: "Legacy inline.",
+	});
+	fs.writeFileSync(path.join(globalProfilesDir(), "instructions.md"), "Shared instructions must not load.");
+	const profileDir = writeDirectoryProfile(globalProfilesDir(), "reviewer", {
+		version: 1, name: "reviewer", tools: ["read"],
+	});
+	fs.writeFileSync(path.join(profileDir, "instructions.md"), "Reviewer only.");
+	writeDirectoryProfile(globalProfilesDir(), "writer", { version: 1, name: "writer", tools: ["read"] });
+	const catalog = loadProfiles(cwd, false);
+	assert.deepEqual(catalog.diagnostics, []);
+	assert.equal(catalog.profiles.get("legacy")?.instructions, "Legacy inline.");
+	assert.equal(catalog.profiles.get("writer")?.instructions, undefined);
+});
+
+test("instructions files follow project trust and whole-profile overrides", () => {
+	const globalDir = writeDirectoryProfile(globalProfilesDir(), "reviewer", {
+		version: 1, name: "reviewer", tools: ["read"],
+	});
+	fs.writeFileSync(path.join(globalDir, "instructions.md"), "Global role.");
+	const projectDir = writeDirectoryProfile(projectProfilesDir(cwd), "reviewer", {
+		version: 1, name: "reviewer", tools: ["read"], instructions: "Project inline.",
+	});
+	assert.equal(resolveProfile("reviewer", cwd, true).instructions, "Project inline.");
+	fs.writeFileSync(path.join(projectDir, "instructions.md"), "Project file.");
+	assert.equal(resolveProfile("reviewer", cwd, false).instructions, "Global role.");
+	assert.equal(resolveProfile("reviewer", cwd, true).instructions, "Project file.");
+});
+
+for (const [label, content, message] of [
+	["empty", " \n\t", /non-empty/],
+	["too many characters", "a".repeat(65537), /65536 characters/],
+	["too many bytes", "a".repeat(256 * 1024 + 1), /maximum byte size/],
+	["directory", undefined, /regular file/],
+] as const) {
+	test(`rejects ${label} instructions.md without falling back to inline or global instructions`, () => {
+		writeJson(path.join(globalProfilesDir(), "reviewer.json"), {
+			version: 1, name: "reviewer", tools: ["read"], instructions: "Global fallback.",
+		});
+		const profileDir = writeDirectoryProfile(projectProfilesDir(cwd), "reviewer", {
+			version: 1, name: "reviewer", tools: ["read"], instructions: "Inline fallback.",
+		});
+		const file = path.join(profileDir, "instructions.md");
+		if (content === undefined) fs.mkdirSync(file);
+		else fs.writeFileSync(file, content);
+		const catalog = loadProfiles(cwd, true);
+		assert.equal(catalog.profiles.has("reviewer"), false);
+		assert.equal(catalog.diagnostics.length, 1);
+		assert.equal(catalog.diagnostics[0]?.path, file);
+		assert.match(catalog.diagnostics[0]!.message, message);
+	});
+}
+
+test("accepts multi-byte instructions at the character limit", () => {
+	const profileDir = writeDirectoryProfile(globalProfilesDir(), "reviewer", {
+		version: 1, name: "reviewer", tools: ["read"],
+	});
+	const instructions = "读".repeat(65536);
+	fs.writeFileSync(path.join(profileDir, "instructions.md"), instructions);
+	assert.equal(resolveProfile("reviewer", cwd, false).instructions, instructions);
+});
+
 test("rejects duplicate file and directory definitions in the same scope", () => {
 	writeJson(path.join(globalProfilesDir(), "reviewer.json"), {
 		version: 1,

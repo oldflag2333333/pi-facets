@@ -37,10 +37,12 @@ Facets does not ship built-in profiles. Profiles are user-owned directories load
 
 ```text
 ~/.pi/agent/facets/profiles/reviewer/
-└── config.json
+├── config.json
+└── instructions.md                     # optional; takes precedence
 
 <cwd-or-ancestor>/.pi/facets/profiles/reviewer/
-└── config.json
+├── config.json
+└── instructions.md                     # optional; takes precedence
 ```
 
 Legacy single-file profiles at `profiles/*.json` remain supported. A directory name (or legacy JSON file stem) must match `name`; defining both forms with the same name in one scope is an error.
@@ -62,6 +64,8 @@ Facets walks from the Main Pi working directory to the filesystem root. A profil
   "instructions": "Review only; do not modify files."
 }
 ```
+
+Directory profiles prefer the UTF-8 contents of `instructions.md` beside `config.json` over the inline `instructions` field; the two are not concatenated. You can omit inline `instructions` when using the file. When the file is absent, the inline field remains the fallback. Both sources must be non-empty when present and are limited to 65,536 characters; `config.json` must still be valid. Empty, oversized, or unreadable instruction files invalidate the profile rather than silently falling back. Legacy `profiles/<name>.json` profiles continue to use inline instructions only and do not read a shared `profiles/instructions.md`. Project trust and whole-profile override rules also apply to instruction files. Changes take effect on `/reload` for startup profiles or a new Sub launch/resume; already-open Subs retain their launch snapshot.
 
 Profile `instructions` are additive. Facets uses Pi's mutable `systemPromptOptions.sections` API rather than replacing the full system prompt: Main contributes `facets_profiles` (capability catalog), `facets_profile` (selected profile instructions), and `facets_main` (`MAIN.md`); Sub contributes only `facets_sub_protocol` and `facets_profile`. Pi continues to assemble its native role, tool summaries, rules, documentation, project context, skills, and cwd according to the user's Pi configuration. Facets delivers `talk` through Pi's `sendUserMessage()` API. Idle deliveries use the normal input pipeline and `before_agent_start` prompt assembly, which records changed sections without repeating unchanged ones. Busy deliveries enter the native follow-up queue and reuse the active run's prompt sections, just like queued user input; they do not individually rerun `before_agent_start`. Facets does not patch model requests through `context_with_system`.
 
